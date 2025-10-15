@@ -131,11 +131,10 @@ data:
       }
       trap cleanup_mount EXIT INT TERM
 
-      label="$(disc_label "$dev" | tr -cd '[:alnum:]_-. ' | tr ' ' '_')"
-      id="$(dev_id "$dev" | tr -cd '[:alnum:]_-. ' | tr ' ' '_')"
-      started="$(date -u +%FT%TZ)"
+      label="$(disc_label "$dev" | tr -cd '[:alnum:]_. -' | tr ' ' '_')"
+      started="$(date -u +%Y-%m-%dT%H%M%SZ)"
 
-      outdir="$DATA_ROOT/$NODE_NAME/${started}_$label_$id"
+      outdir="$DATA_ROOT/$NODE_NAME/${started}_${label}"
       mkdir -p "$outdir"
 
       log "Processing $dev → $outdir"
@@ -187,14 +186,24 @@ data:
         fi
       fi
 
-      finished="$(date -u +%FT%TZ)"
-      if [[ $rc -eq 0 ]]; then
-        make_status "$outdir" "success" "Completed ddrescue with $RETRIES retries" "$iso" "$started" "$finished"
-        log "SUCCESS for $dev"
-      else
-        make_status "$outdir" "partial_or_failed" "ddrescue exited rc=$rc after retries" "$iso" "$started" "$finished"
-        log "FAIL/PARTIAL for $dev (rc=$rc). See $outdir/status.json"
+      finished="$(date -u +%Y%m%d-%H%M%S)"
+      # Check if we recovered enough data to call it success
+      rescued_pct="0"
+      if [[ -f "$outdir/ddrescue.log" ]]; then
+        rescued_line=$(grep 'rescued:' "$outdir/ddrescue.log" | tail -1 || true)
+        # Extract percentage if available (crude parsing)
+        rescued_pct=$(echo "$rescued_line" | grep -oP '\d+\.\d+(?=%)' || echo "0")
       fi
+
+      # Consider >99% as success even if ddrescue returned error code
+      if [[ $rc -eq 0 ]] || (( $(echo "$rescued_pct > 99" | bc -l 2>/dev/null || echo 0) )); then
+        make_status "$outdir" "success" "Recovered $rescued_pct% (ddrescue rc=$rc)" "$iso" "$started" "$finished"
+        log "SUCCESS for $dev (recovered $rescued_pct%)"
+      else
+        make_status "$outdir" "partial_or_failed" "ddrescue exited rc=$rc after retries, recovered $rescued_pct%" "$iso" "$started" "$finished"
+        log "FAIL/PARTIAL for $dev (rc=$rc, rescued $rescued_pct%). See $outdir/status.json"
+      fi
+
 
       rm -f "$outdir/.in-progress"
       sync || true
