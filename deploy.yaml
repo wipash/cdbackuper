@@ -169,6 +169,7 @@ data:
       iso_info_dump "$iso" "$outdir"
 
       # FIX #5: Check ISO integrity before attempting to mount/extract
+      local files_extracted=false
       if [[ "${EXTRACT_FILES}" == "true" && -s "$iso" ]]; then
         if ! isoinfo -d -i "$iso" &>/dev/null; then
           log "ISO appears corrupt or unreadable, skipping file extraction"
@@ -179,6 +180,7 @@ data:
             if mountpoint -q /mnt/work; then
               rsync -a /mnt/work/ "$outdir/files/" || true
               umount /mnt/work || true
+              files_extracted=true
             fi
           else
             log "Could not mount ISO to extract files (non-fatal)."
@@ -186,7 +188,15 @@ data:
         fi
       fi
 
-      finished="$(date -u +%Y%m%d-%H%M%S)"
+      finished="$(date -u +%FT%TZ)"
+
+      # Auto-delete ISO on successful extraction (saves space)
+      if [[ "$rc" -eq 0 && "$files_extracted" == "true" && "${DELETE_ISO_ON_SUCCESS:-true}" == "true" ]]; then
+        log "Files extracted successfully, deleting ISO to save space"
+        rm -f "$iso"
+      fi
+
+
       # Check if we recovered enough data to call it success
       rescued_pct="0"
       if [[ -f "$outdir/ddrescue.log" ]]; then
@@ -286,6 +296,8 @@ spec:
           - name: RETRIES
             value: "2"
           - name: EXTRACT_FILES
+            value: "true"
+          - name: DELETE_ISO_ON_SUCCESS
             value: "true"
           - name: TIMEOUT
             value: "7200"
