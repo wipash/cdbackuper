@@ -100,12 +100,18 @@ data:
 
     make_status() {
       local dest="$1" status="$2" msg="$3" iso="$4" started="$5" finished="$6"
-      local rescued="" errors=""
-      if [[ -f "$dest/ddrescue.log" ]]; then
-        # quick parse summary if present
-        rescued=$(grep -m1 'rescued:' "$dest/ddrescue.log" || true)
-        errors=$(grep -m1 'errors:' "$dest/ddrescue.log" || true)
+      local rescued="" errors="" rescued_pct="" read_errors=""
+
+      # Parse ddrescue output file (human-readable text)
+      if [[ -f "$dest/ddrescue-output.txt" ]]; then
+        # Get the last "rescued:" line (final status)
+        rescued=$(grep 'rescued:' "$dest/ddrescue-output.txt" | tail -1 | awk '{print $2, $3}' || echo "unknown")
+        # Get percentage
+        rescued_pct=$(grep 'pct rescued:' "$dest/ddrescue-output.txt" | tail -1 | awk '{print $3}' || echo "0%")
+        # Get read errors count
+        read_errors=$(grep 'read errors:' "$dest/ddrescue-output.txt" | tail -1 | awk '{print $3}' || echo "0")
       fi
+
       jq -n --arg node "$NODE_NAME" \
             --arg status "$status" \
             --arg message "$msg" \
@@ -113,8 +119,9 @@ data:
             --arg started "$started" \
             --arg finished "$finished" \
             --arg rescued "$rescued" \
-            --arg errors "$errors" \
-            '{node:$node,status:$status,message:$message,iso:$iso,started:$started,finished:$finished,ddrescue:{rescued:$rescued,errors:$errors}}' \
+            --arg rescued_pct "$rescued_pct" \
+            --arg read_errors "$read_errors" \
+            '{node:$node,status:$status,message:$message,iso:$iso,started:$started,finished:$finished,ddrescue:{rescued:$rescued,rescued_pct:$rescued_pct,read_errors:$read_errors}}' \
         > "$dest/status.json"
     }
 
@@ -154,9 +161,10 @@ data:
       timeout_pid=$!
 
       # ddrescue fast pass + a few retries
+      # Capture output to text file for parsing stats
       set +e
-      ddrescue -d -n "$dev" "$iso" "$outdir/ddrescue.log"
-      ddrescue -d -r"$RETRIES" "$dev" "$iso" "$outdir/ddrescue.log"
+      ddrescue -d -n "$dev" "$iso" "$outdir/ddrescue.mapfile" 2>&1 | tee "$outdir/ddrescue-output.txt"
+      ddrescue -d -r"$RETRIES" "$dev" "$iso" "$outdir/ddrescue.mapfile" 2>&1 | tee -a "$outdir/ddrescue-output.txt"
       rc=$?
       set -e
 
