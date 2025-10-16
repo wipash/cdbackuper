@@ -78,14 +78,9 @@ data:
       blkid -o value -s LABEL "$dev" 2>/dev/null || echo "unknown"
     }
 
-    dev_id() {
+    disc_uuid() {
       local dev="$1"
-      # Stable-ish ID via /dev/disk/by-id if present, else basename
-      local path
-      path=$(readlink -f "$dev")
-      local byid
-      byid=$(ls -1 /dev/disk/by-id/* 2>/dev/null | xargs -r -I{} bash -lc 'if [[ $(readlink -f "{}") == "'"$path"'" ]]; then basename "{}"; fi' | head -n1)
-      [[ -n "${byid:-}" ]] && echo "$byid" || basename "$dev"
+      blkid -o value -s UUID "$dev" 2>/dev/null || echo ""
     }
 
     dump_metadata() {
@@ -99,7 +94,7 @@ data:
     }
 
     make_status() {
-      local dest="$1" status="$2" msg="$3" iso="$4" started="$5" finished="$6"
+      local dest="$1" status="$2" msg="$3" iso="$4" started="$5" finished="$6" uuid="$7"
       local rescued="" errors="" rescued_pct="" read_errors=""
 
       # Parse ddrescue output file (human-readable text)
@@ -118,10 +113,11 @@ data:
             --arg iso "$(basename "$iso")" \
             --arg started "$started" \
             --arg finished "$finished" \
+            --arg uuid "$uuid" \
             --arg rescued "$rescued" \
             --arg rescued_pct "$rescued_pct" \
             --arg read_errors "$read_errors" \
-            '{node:$node,status:$status,message:$message,iso:$iso,started:$started,finished:$finished,ddrescue:{rescued:$rescued,rescued_pct:$rescued_pct,read_errors:$read_errors}}' \
+            '{node:$node,status:$status,message:$message,iso:$iso,uuid:$uuid,started:$started,finished:$finished,ddrescue:{rescued:$rescued,rescued_pct:$rescued_pct,read_errors:$read_errors}}' \
         > "$dest/status.json"
     }
 
@@ -139,9 +135,15 @@ data:
       trap cleanup_mount EXIT INT TERM
 
       label="$(disc_label "$dev" | tr -cd '[:alnum:]_. -' | tr ' ' '_')"
+      uuid="$(disc_uuid "$dev" | tr -cd '[:alnum:]-')"
       started="$(date -u +%Y-%m-%dT%H%M%SZ)"
 
-      outdir="$DATA_ROOT/$NODE_NAME/${started}_${label}"
+      if [[ -n "$uuid" ]]; then
+        outdir="$DATA_ROOT/$NODE_NAME/${label}_${uuid}"
+      else
+        outdir="$DATA_ROOT/$NODE_NAME/${started}_${label}"
+      fi
+
       mkdir -p "$outdir"
 
       log "Processing $dev → $outdir"
@@ -216,10 +218,10 @@ data:
 
       # Consider >99% as success even if ddrescue returned error code
       if [[ $rc -eq 0 ]] || (( $(echo "$rescued_pct > 99" | bc -l 2>/dev/null || echo 0) )); then
-        make_status "$outdir" "success" "Recovered $rescued_pct% (ddrescue rc=$rc)" "$iso" "$started" "$finished"
+        make_status "$outdir" "success" "Recovered $rescued_pct% (ddrescue rc=$rc)" "$iso" "$started" "$finished" "$uuid""
         log "SUCCESS for $dev (recovered $rescued_pct%)"
       else
-        make_status "$outdir" "partial_or_failed" "ddrescue exited rc=$rc after retries, recovered $rescued_pct%" "$iso" "$started" "$finished"
+        make_status "$outdir" "partial_or_failed" "ddrescue exited rc=$rc after retries, recovered $rescued_pct%" "$iso" "$started" "$finished" "$uuid"
         log "FAIL/PARTIAL for $dev (rc=$rc, rescued $rescued_pct%). See $outdir/status.json"
       fi
 
