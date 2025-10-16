@@ -363,10 +363,20 @@ spec:
       serviceAccountName: default
       hostPID: true
       hostIPC: true
-      # Set fsGroup so NFS volumes are writable by group 65537
+      # Set fsGroup to match NFS server's gid for proper permissions
       securityContext:
         fsGroup: 65537
         fsGroupChangePolicy: "OnRootMismatch"
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+            - matchExpressions:
+              - key: kubernetes.io/hostname
+                operator: NotIn
+                values:
+                - hp1  # Don't schedule on hp1, has some issue with its cd drive
+
       containers:
       - name: watcher
         image: ghcr.io/wipash/cdbackuper:latest
