@@ -191,9 +191,11 @@ data:
       started="$(date -u +%Y-%m-%dT%H%M%SZ)"
 
       if [[ -n "$uuid" ]]; then
-        outdir="$DATA_ROOT/$NODE_NAME/${label}_${uuid}"
+        # outdir="$DATA_ROOT/$NODE_NAME/${label}_${uuid}"
+        outdir="$DATA_ROOT/${label}_${uuid}"
       else
-        outdir="$DATA_ROOT/$NODE_NAME/${started}_${label}"
+        # outdir="$DATA_ROOT/$NODE_NAME/${started}_${label}"
+        outdir="$DATA_ROOT/${started}_${label}"
       fi
 
       mkdir -p "$outdir"
