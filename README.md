@@ -23,3 +23,8 @@ kubectl apply -f deploy.yaml
 ```bash
 kubectl -n cd-import rollout restart daemonset/cd-importer
 ```
+
+### Monitor
+```bash
+kubectl -n cd-import logs -f -l app=cd-importer --prefix=true
+```
