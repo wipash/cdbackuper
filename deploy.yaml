@@ -12,7 +12,7 @@ spec:
     storage: 1Ti
   accessModes: [ ReadWriteMany ]
   persistentVolumeReclaimPolicy: Retain
-  storageClassName: ""           # <-- ADD THIS
+  storageClassName: ""
   nfs:
     server: 172.20.0.1
     path: /volume1/Backup/Maurice/cd-archive
@@ -24,7 +24,7 @@ metadata:
   namespace: cd-import
 spec:
   accessModes: [ ReadWriteMany ]
-  storageClassName: ""           # <-- ADD THIS
+  storageClassName: ""
   resources:
     requests:
       storage: 1Ti
@@ -121,6 +121,48 @@ data:
         > "$dest/status.json"
     }
 
+    send_discord_notification() {
+      local status="$1"
+      local label="$2"
+      local rescued_pct="$3"
+      local read_errors="$4"
+      local outdir="$5"
+
+      # Skip if webhook not configured
+      [[ -z "${DISCORD_WEBHOOK_URL:-}" ]] && return 0
+
+      local color emoji title description
+
+      if [[ "$status" == "success" ]]; then
+        color="3066993"  # Green
+        emoji="✅"
+        title="CD Archived Successfully"
+        description="**Label:** $label\n**Node:** $NODE_NAME\n**Rescued:** $rescued_pct\n**Status:** Complete"
+      else
+        color="15158332"  # Red
+        emoji="❌"
+        title="CD Archive Failed/Partial"
+        description="**Label:** $label\n**Node:** $NODE_NAME\n**Rescued:** $rescued_pct\n**Read Errors:** $read_errors\n**Status:** Check logs"
+      fi
+
+      # Send Discord webhook (with embed for nice formatting)
+      curl -X POST "${DISCORD_WEBHOOK_URL}" \
+        -H "Content-Type: application/json" \
+        -d "{
+          \"username\": \"CD Archiver\",
+          \"embeds\": [{
+            \"title\": \"$emoji $title\",
+            \"description\": \"$description\",
+            \"color\": $color,
+            \"footer\": {
+              \"text\": \"$(basename "$outdir")\"
+            },
+            \"timestamp\": \"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"
+          }]
+        }" 2>/dev/null || true
+    }
+
+
     process_disc() {
       local dev="$1"
       local started finished label id outdir iso loopmnt rc=0 timeout_pid
@@ -208,27 +250,36 @@ data:
       fi
 
 
-      # Check if we recovered enough data to call it success
-      rescued_pct="0"
-      if [[ -f "$outdir/ddrescue.log" ]]; then
-        rescued_line=$(grep 'rescued:' "$outdir/ddrescue.log" | tail -1 || true)
-        # Extract percentage if available (crude parsing)
-        rescued_pct=$(echo "$rescued_line" | grep -oP '\d+\.\d+(?=%)' || echo "0")
+      # Parse rescue stats for notification
+      local rescued_pct="unknown"
+      local read_errors="0"
+      if [[ -f "$outdir/ddrescue-output.txt" ]]; then
+        rescued_pct=$(grep 'pct rescued:' "$outdir/ddrescue-output.txt" | tail -1 | awk '{print $3}' || echo "unknown")
+        read_errors=$(grep 'read errors:' "$outdir/ddrescue-output.txt" | tail -1 | awk '{print $3}' || echo "0")
       fi
 
-      # Consider >99% as success even if ddrescue returned error code
-      if [[ $rc -eq 0 ]] || (( $(echo "$rescued_pct > 99" | bc -l 2>/dev/null || echo 0) )); then
-        make_status "$outdir" "success" "Recovered $rescued_pct% (ddrescue rc=$rc)" "$iso" "$started" "$finished" "$uuid""
-        log "SUCCESS for $dev (recovered $rescued_pct%)"
+      if [[ $rc -eq 0 ]] || [[ "$files_extracted" == "true" ]]; then
+        make_status "$outdir" "success" "Recovered successfully" "$iso" "$started" "$finished" "$uuid"
+        send_discord_notification "success" "$label" "$rescued_pct" "$read_errors" "$outdir"
+        log "SUCCESS for $dev"
       else
-        make_status "$outdir" "partial_or_failed" "ddrescue exited rc=$rc after retries, recovered $rescued_pct%" "$iso" "$started" "$finished" "$uuid"
-        log "FAIL/PARTIAL for $dev (rc=$rc, rescued $rescued_pct%). See $outdir/status.json"
+        make_status "$outdir" "partial_or_failed" "ddrescue exited rc=$rc after retries" "$iso" "$started" "$finished" "$uuid"
+        send_discord_notification "failure" "$label" "$rescued_pct" "$read_errors" "$outdir"
+        log "FAIL/PARTIAL for $dev (rc=$rc). See $outdir/status.json"
       fi
 
 
       rm -f "$outdir/.in-progress"
       sync || true
-      eject "$dev" || true
+
+      # Eject disc
+      if eject "$dev" 2>/dev/null; then
+        log "Eject command sent for $dev"
+        # Give the drive time to physically eject
+        sleep 2
+      else
+        log "Eject command failed for $dev"
+      fi
 
       # Cleanup trap on normal exit
       trap - EXIT INT TERM
@@ -291,7 +342,8 @@ spec:
         fsGroupChangePolicy: "OnRootMismatch"
       containers:
       - name: watcher
-        image: ghcr.io/wipash/cdbackuper:latest@sha256:1ce7d785c66946582f916b4771c187c79f344d4b3b00555bca3d6a56579024a9
+        image: ghcr.io/wipash/cdbackuper:latest
+        imagePullPolicy: Always
         securityContext:
           privileged: true
           allowPrivilegeEscalation: true
@@ -314,6 +366,12 @@ spec:
             value: "7200"
           - name: POLL_SECS
             value: "5"
+          - name: DISCORD_WEBHOOK_URL
+            valueFrom:
+              secretKeyRef:
+                name: cd-archiver-config
+                key: discord-webhook-url
+                optional: true  # Won't fail if secret doesn't exist
         command: ["/usr/local/bin/cd-importer.sh"]
         volumeMounts:
           - name: host-dev
