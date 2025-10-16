@@ -162,11 +162,10 @@ data:
 
       # ddrescue fast pass + a few retries
       # -b 2048: CD/DVD sector size (fixes unaligned read errors)
-      # -c 512k: Read 512KB at a time (faster for good discs)
       # -R: Reverse direction on retry (better for scratches)
       set +e
-      ddrescue -d -b 2048 -c 512k -n "$dev" "$iso" "$outdir/ddrescue.mapfile" 2>&1 | tee "$outdir/ddrescue-output.txt"
-      ddrescue -d -b 2048 -c 256k -R -r"$RETRIES" "$dev" "$iso" "$outdir/ddrescue.mapfile" 2>&1 | tee -a "$outdir/ddrescue-output.txt"
+      ddrescue -d -b 2048 -n "$dev" "$iso" "$outdir/ddrescue.mapfile" 2>&1 | tee "$outdir/ddrescue-output.txt"
+      ddrescue -d -b 2048 -R -r"$RETRIES" "$dev" "$iso" "$outdir/ddrescue.mapfile" 2>&1 | tee -a "$outdir/ddrescue-output.txt"
       rc=$?
       set -e
 
