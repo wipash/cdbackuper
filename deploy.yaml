@@ -52,14 +52,23 @@ data:
 
     mkdir -p /var/run/cd-import /mnt/work
 
-    log() { echo "[$(date -u +%FT%TZ)] $*"; }
+    # Enhanced logging with device context
+    log() {
+      local dev_id="${1:-}"
+      shift || true
+      if [[ -n "$dev_id" ]]; then
+        echo "[$(date -u +%FT%TZ)] [$NODE_NAME:$dev_id] $*"
+      else
+        echo "[$(date -u +%FT%TZ)] [$NODE_NAME] $*"
+      fi
+    }
 
     # FIX #4: Verify NFS mount at startup
     if ! mountpoint -q "$DATA_ROOT"; then
-      log "FATAL: $DATA_ROOT is not mounted! Cannot proceed."
+      log "" "FATAL: $DATA_ROOT is not mounted! Cannot proceed."
       exit 1
     fi
-    log "Confirmed $DATA_ROOT is mounted."
+    log "" "✓ Confirmed $DATA_ROOT is mounted"
 
     has_media() {
       local dev="$1"
@@ -127,6 +136,7 @@ data:
       local rescued_pct="$3"
       local read_errors="$4"
       local outdir="$5"
+      local dev_name="$6"
 
       # Skip if webhook not configured
       [[ -z "${DISCORD_WEBHOOK_URL:-}" ]] && return 0
@@ -137,12 +147,12 @@ data:
         color="3066993"  # Green
         emoji="✅"
         title="CD Archived Successfully"
-        description="**Label:** $label\n**Node:** $NODE_NAME\n**Rescued:** $rescued_pct\n**Status:** Complete"
+        description="**Label:** $label\n**Device:** $dev_name\n**Node:** $NODE_NAME\n**Rescued:** $rescued_pct\n**Status:** Complete"
       else
         color="15158332"  # Red
         emoji="❌"
         title="CD Archive Failed/Partial"
-        description="**Label:** $label\n**Node:** $NODE_NAME\n**Rescued:** $rescued_pct\n**Read Errors:** $read_errors\n**Status:** Check logs"
+        description="**Label:** $label\n**Device:** $dev_name\n**Node:** $NODE_NAME\n**Rescued:** $rescued_pct\n**Read Errors:** $read_errors\n**Status:** Check logs"
       fi
 
       # Send Discord webhook (with embed for nice formatting)
@@ -162,10 +172,10 @@ data:
         }" 2>/dev/null || true
     }
 
-
     process_disc() {
       local dev="$1"
-      local started finished label id outdir iso loopmnt rc=0 timeout_pid
+      local dev_name=$(basename "$dev")
+      local started finished label uuid outdir iso rc=0 timeout_pid
 
       # FIX #3: Clean mount point before use
       umount /mnt/work 2>/dev/null || true
@@ -188,7 +198,11 @@ data:
 
       mkdir -p "$outdir"
 
-      log "Processing $dev → $outdir"
+      log "$dev_name" "════════════════════════════════════════"
+      log "$dev_name" "🔵 STARTED - Label: '$label'"
+      log "$dev_name" "   Output: $(basename "$outdir")"
+      log "$dev_name" "════════════════════════════════════════"
+
       dump_metadata "$dev" "$outdir"
 
       iso="$outdir/disc.iso"
@@ -198,15 +212,14 @@ data:
       (
         sleep "$TIMEOUT"
         if [[ -f "$outdir/.in-progress" ]]; then
-          log "Timeout ($TIMEOUT s) hit for $dev; attempting to stop ddrescue and continue."
+          log "$dev_name" "⏱️  TIMEOUT hit, stopping ddrescue"
           pkill -f "ddrescue .* $dev" || true
         fi
       ) &
       timeout_pid=$!
 
       # ddrescue fast pass + a few retries
-      # -b 2048: CD/DVD sector size (fixes unaligned read errors)
-      # -R: Reverse direction on retry (better for scratches)
+      log "$dev_name" "📀 Running ddrescue (fast pass + $RETRIES retries)..."
       set +e
       ddrescue -d -b 2048 -n "$dev" "$iso" "$outdir/ddrescue.mapfile" 2>&1 | tee "$outdir/ddrescue-output.txt"
       ddrescue -d -b 2048 -R -r"$RETRIES" "$dev" "$iso" "$outdir/ddrescue.mapfile" 2>&1 | tee -a "$outdir/ddrescue-output.txt"
@@ -219,36 +232,38 @@ data:
         wait "$timeout_pid" 2>/dev/null || true
       fi
 
+      log "$dev_name" "📝 ddrescue completed with exit code: $rc"
+
       iso_info_dump "$iso" "$outdir"
 
       # FIX #5: Check ISO integrity before attempting to mount/extract
       local files_extracted=false
       if [[ "${EXTRACT_FILES}" == "true" && -s "$iso" ]]; then
         if ! isoinfo -d -i "$iso" &>/dev/null; then
-          log "ISO appears corrupt or unreadable, skipping file extraction"
+          log "$dev_name" "⚠️  ISO appears corrupt, skipping file extraction"
         else
+          log "$dev_name" "📂 Extracting files from ISO..."
           mkdir -p "$outdir/files"
-          # Mount the ISO read-only via loop and copy out
           if mount -o loop,ro "$iso" /mnt/work 2>/dev/null; then
             if mountpoint -q /mnt/work; then
               rsync -a /mnt/work/ "$outdir/files/" || true
               umount /mnt/work || true
               files_extracted=true
+              log "$dev_name" "✓ Files extracted successfully"
             fi
           else
-            log "Could not mount ISO to extract files (non-fatal)."
+            log "$dev_name" "⚠️  Could not mount ISO (non-fatal)"
           fi
         fi
       fi
 
-      finished="$(date -u +%FT%TZ)"
+      finished="$(date -u +%Y-%m-%dT%H%M%SZ)"
 
-      # Auto-delete ISO on successful extraction (saves space)
+      # Auto-delete ISO on successful extraction
       if [[ "$rc" -eq 0 && "$files_extracted" == "true" && "${DELETE_ISO_ON_SUCCESS:-true}" == "true" ]]; then
-        log "Files extracted successfully, deleting ISO to save space"
+        log "$dev_name" "🗑️  Deleting ISO to save space"
         rm -f "$iso"
       fi
-
 
       # Parse rescue stats for notification
       local rescued_pct="unknown"
@@ -260,25 +275,29 @@ data:
 
       if [[ $rc -eq 0 ]] || [[ "$files_extracted" == "true" ]]; then
         make_status "$outdir" "success" "Recovered successfully" "$iso" "$started" "$finished" "$uuid"
-        send_discord_notification "success" "$label" "$rescued_pct" "$read_errors" "$outdir"
-        log "SUCCESS for $dev"
+        send_discord_notification "success" "$label" "$rescued_pct" "$read_errors" "$outdir" "$dev_name"
+        log "$dev_name" "════════════════════════════════════════"
+        log "$dev_name" "✅ SUCCESS - Rescued: $rescued_pct"
+        log "$dev_name" "════════════════════════════════════════"
       else
         make_status "$outdir" "partial_or_failed" "ddrescue exited rc=$rc after retries" "$iso" "$started" "$finished" "$uuid"
-        send_discord_notification "failure" "$label" "$rescued_pct" "$read_errors" "$outdir"
-        log "FAIL/PARTIAL for $dev (rc=$rc). See $outdir/status.json"
+        send_discord_notification "failure" "$label" "$rescued_pct" "$read_errors" "$outdir" "$dev_name"
+        log "$dev_name" "════════════════════════════════════════"
+        log "$dev_name" "❌ FAILED - Rescued: $rescued_pct, Errors: $read_errors"
+        log "$dev_name" "   See: $(basename "$outdir")/status.json"
+        log "$dev_name" "════════════════════════════════════════"
       fi
-
 
       rm -f "$outdir/.in-progress"
       sync || true
 
       # Eject disc
+      log "$dev_name" "⏏️  Ejecting disc..."
       if eject "$dev" 2>/dev/null; then
-        log "Eject command sent for $dev"
         # Give the drive time to physically eject
         sleep 2
       else
-        log "Eject command failed for $dev"
+        log "$dev_name" "⚠️  Eject command failed"
       fi
 
       # Cleanup trap on normal exit
@@ -290,13 +309,17 @@ data:
     declare -A active_jobs
 
     # Main loop
-    log "Starting CD watcher on node $NODE_NAME. Devices: $DEVICE_GLOB"
+    log "" "🚀 Starting CD watcher - monitoring: $DEVICE_GLOB"
+    log "" "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
     while true; do
       # Clean up finished jobs
       for pid in "${!active_jobs[@]}"; do
         if ! kill -0 "$pid" 2>/dev/null; then
           wait "$pid" 2>/dev/null || true
+          local finished_dev="${active_jobs[$pid]}"
           unset active_jobs[$pid]
+          log "$(basename "$finished_dev")" "Job completed (PID: $pid)"
         fi
       done
 
@@ -309,11 +332,13 @@ data:
           if mkdir "$lock" 2>/dev/null; then
             (
               process_disc "$dev" || true
+              # Keep lock for a moment to prevent immediate re-detection
+              sleep 3
               rmdir "$lock" 2>/dev/null || true
             ) &
             # FIX #6: Track the background job PID
             active_jobs[$!]="$dev"
-            log "Started processing job $! for $dev"
+            log "$(basename "$dev")" "Spawned job PID $! (active jobs: ${#active_jobs[@]})"
           fi
         fi
       done
