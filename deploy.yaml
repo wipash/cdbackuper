@@ -191,8 +191,8 @@ data:
       started="$(date -u +%Y-%m-%dT%H%M%SZ)"
 
       if [[ -n "$uuid" ]]; then
-        # outdir="$DATA_ROOT/$NODE_NAME/${label}_${uuid}"
-        outdir="$DATA_ROOT/${label}_${uuid}"
+        # outdir="$DATA_ROOT/$NODE_NAME/${uuid}_${label}"
+        outdir="$DATA_ROOT/${uuid}_${label}"
       else
         # outdir="$DATA_ROOT/$NODE_NAME/${started}_${label}"
         outdir="$DATA_ROOT/${started}_${label}"
