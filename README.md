@@ -1,4 +1,12 @@
 # cdbackuper
+A little system running in Kubernetes (although it doesn't really need to), that:
+- Watches for inserted CDs
+- Extracts their contents using `ddrescue`
+- Dumps files from the iso
+- Saves everything to a NAS
+- Sends a Discord notification when done
+
+The main reason for this is to archive a large collection of CDs containing photos and other media from my grandparents, which will not only preserve the data but also allow easier access to it in the future.
 
 ### Build container image
 ```bash
