@@ -151,12 +151,20 @@ process_disc() {
   uuid="$(disc_uuid "$dev" | tr -cd '[:alnum:]-')"
   started="$(date -u +%Y-%m-%dT%H%M%SZ)"
 
+  # Skip generic/meaningless labels when naming directories
+  case "$label" in
+    NEW|My_Disc|unknown)
+      label_suffix=""
+      ;;
+    *)
+      label_suffix="_${label}"
+      ;;
+  esac
+
   if [[ -n "$uuid" ]]; then
-    # outdir="$DATA_ROOT/$NODE_NAME/${uuid}_${label}"
-    outdir="$DATA_ROOT/${uuid}_${label}"
+    outdir="$DATA_ROOT/${uuid}${label_suffix}"
   else
-    # outdir="$DATA_ROOT/$NODE_NAME/${started}_${label}"
-    outdir="$DATA_ROOT/${started}_${label}"
+    outdir="$DATA_ROOT/${started}${label_suffix}"
   fi
 
   mkdir -p "$outdir"
