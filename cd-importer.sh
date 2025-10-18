@@ -270,7 +270,7 @@ process_disc() {
   log "$dev_name" "⏏️  Ejecting disc..."
   if eject "$dev" 2>/dev/null; then
     # Give the drive time to physically eject
-    sleep 2
+    sleep 5
   else
     log "$dev_name" "⚠️  Eject command failed"
   fi
