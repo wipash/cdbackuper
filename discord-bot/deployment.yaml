@@ -20,7 +20,7 @@ spec:
     spec:
       containers:
       - name: bot
-        image: ghcr.io/wipash/cd-label-bot:latest@sha256:b9b14e3426677dd3e8d35fe85217916c2cf711d324b31265276b70ef3925adda
+        image: ghcr.io/wipash/cd-label-bot:latest@sha256:4384ce9be173e8d1bb4a0f6b4ab29d0448cd1a9f4b24dd54cec93d8c66135e90
         imagePullPolicy: Always
         env:
         - name: DATA_ROOT
