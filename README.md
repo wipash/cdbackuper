@@ -8,6 +8,13 @@ A little system running in Kubernetes (although it doesn't really need to), that
 
 The main reason for this is to archive a large collection of CDs containing photos and other media from my grandparents, which will not only preserve the data but also allow easier access to it in the future.
 
+### Edit and test the script
+The main logic is in `cd-importer.sh`. After editing, regenerate the deployment manifest:
+```bash
+shellcheck cd-importer.sh
+./build-deploy.sh
+```
+
 ### Build container image
 ```bash
 podman build -t ghcr.io/wipash/cdbackuper .
@@ -24,6 +31,7 @@ kubectl create secret generic cd-archiver-config \
 
 ### Deploy
 ```bash
+./build-deploy.sh  # Generate deploy.yaml from template
 kubectl apply -f deploy.yaml
 ```
 
