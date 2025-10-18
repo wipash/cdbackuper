@@ -20,20 +20,28 @@ The system runs as a **Kubernetes DaemonSet** in the `cd-import` namespace. This
    - Uses atomic directory-based locks (`mkdir`) to prevent race conditions when multiple discs are detected
    - Processes each disc in a background job, tracking active PIDs to prevent zombie processes
 
-2. **Data Flow**:
+2. **Discord Label Bot** (`discord-bot/`):
+   - Python bot that listens for replies to CD archival notifications
+   - Allows you to add human-readable labels to discs after processing completes
+   - Writes labels to `label.txt` in each disc's output directory
+   - See `discord-bot/README.md` for setup instructions
+
+3. **Data Flow**:
    ```
    CD inserted → Device detection → Lock acquired → Background job spawned →
    Metadata dump → ddrescue (fast + retry passes) → ISO validation →
    File extraction → Discord notification → Disc ejection → Lock released
+
+   User replies with label → Bot writes to label.txt
    ```
 
-3. **Storage Architecture**:
+4. **Storage Architecture**:
    - **NFS PersistentVolume** mounted at `/data` (1Ti, ReadWriteMany)
    - NFS server: `172.20.0.1:/volume1/Backup/Maurice/cd-archive`
    - Output directories named: `{UUID}_{LABEL}` or `{TIMESTAMP}_{LABEL}`
    - ISO files are auto-deleted after successful file extraction (configurable via `DELETE_ISO_ON_SUCCESS`)
 
-4. **Concurrency & Safety**:
+5. **Concurrency & Safety**:
    - Each device gets a lockfile in `/var/run/cd-import/`
    - Timeout guard (default 7200s) kills hung ddrescue processes
    - Mount point cleanup via traps (EXIT, INT, TERM)
@@ -99,13 +107,20 @@ kubectl -n cd-import exec -it <pod-name> -- ps aux | grep ddrescue
 ### Configuration
 
 ```bash
-# Create Discord webhook secret (required for notifications)
+# Create Discord secrets (webhook required for notifications, bot token optional for labels)
 kubectl create secret generic cd-archiver-config \
   --from-literal=discord-webhook-url='https://discord.com/api/webhooks/ID/TOKEN' \
+  --from-literal=discord-bot-token='YOUR_BOT_TOKEN' \
   -n cd-import
 
 # Verify secret exists
 kubectl -n cd-import get secret cd-archiver-config
+
+# Deploy label bot (optional - see discord-bot/README.md for setup)
+cd discord-bot
+podman build -t ghcr.io/wipash/cd-label-bot .
+podman push ghcr.io/wipash/cd-label-bot:latest
+kubectl apply -f deployment.yaml
 ```
 
 ## Environment Variables
@@ -132,6 +147,7 @@ Each processed disc creates:
 ├── ddrescue.mapfile       # ddrescue recovery map
 ├── ddrescue-output.txt    # Full ddrescue stdout/stderr
 ├── status.json            # Processing status and stats
+├── label.txt              # User-provided label (created by Discord bot on reply)
 ├── disc.iso               # Raw ISO image (deleted if extraction succeeds)
 └── files/                 # Extracted files from ISO
 ```

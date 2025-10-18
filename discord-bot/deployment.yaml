@@ -1,0 +1,41 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: cd-import
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cd-label-bot
+  namespace: cd-import
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: cd-label-bot
+  template:
+    metadata:
+      labels:
+        app: cd-label-bot
+    spec:
+      containers:
+      - name: bot
+        image: ghcr.io/wipash/cd-label-bot:latest@sha256:b9b14e3426677dd3e8d35fe85217916c2cf711d324b31265276b70ef3925adda
+        imagePullPolicy: Always
+        env:
+        - name: DATA_ROOT
+          value: "/data"
+        - name: DEBUG
+          value: "true"
+        - name: DISCORD_BOT_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: cd-archiver-config
+              key: discord-bot-token
+        volumeMounts:
+        - name: cd-archive
+          mountPath: /data
+      volumes:
+      - name: cd-archive
+        persistentVolumeClaim:
+          claimName: cd-archive-pvc

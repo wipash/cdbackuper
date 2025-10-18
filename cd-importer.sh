@@ -108,12 +108,12 @@ send_discord_notification() {
     color="3066993"  # Green
     emoji="✅"
     title="CD Archived Successfully"
-    description="**Label:** $label\n**Device:** $dev_name\n**Node:** $NODE_NAME\n**Rescued:** $rescued_pct\n**Status:** Complete"
+    description="**Label:** $label\n**Device:** $dev_name\n**Node:** $NODE_NAME\n**Rescued:** $rescued_pct\n**Path:** $(basename "$outdir")\n\n💬 *Reply to add disc label*"
   else
     color="15158332"  # Red
     emoji="❌"
     title="CD Archive Failed/Partial"
-    description="**Label:** $label\n**Device:** $dev_name\n**Node:** $NODE_NAME\n**Rescued:** $rescued_pct\n**Read Errors:** $read_errors\n**Status:** Check logs"
+    description="**Label:** $label\n**Device:** $dev_name\n**Node:** $NODE_NAME\n**Rescued:** $rescued_pct\n**Read Errors:** $read_errors\n**Path:** $(basename "$outdir")"
   fi
 
   # Send Discord webhook (with embed for nice formatting)
