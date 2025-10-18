@@ -238,13 +238,17 @@ process_disc() {
 
   # Parse rescue stats for notification
   local rescued_pct="unknown"
+  local rescued_pct_num=0
   local read_errors="0"
   if [[ -f "$outdir/ddrescue-output.txt" ]]; then
     rescued_pct=$(grep 'pct rescued:' "$outdir/ddrescue-output.txt" | tail -1 | awk '{print $3}' || echo "unknown")
+    # Extract numeric value for comparison (e.g., "99.5%" -> 99.5)
+    rescued_pct_num=$(echo "$rescued_pct" | sed 's/%$//' || echo "0")
     read_errors=$(grep 'read errors:' "$outdir/ddrescue-output.txt" | tail -1 | awk '{print $3}' || echo "0")
   fi
 
-  if [[ $rc -eq 0 ]] || [[ "$files_extracted" == "true" ]]; then
+  # Success requires: ddrescue exit code 0 OR (files extracted AND >95% rescued)
+  if [[ $rc -eq 0 ]] || [[ "$files_extracted" == "true" && $(echo "$rescued_pct_num >= 95" | bc -l 2>/dev/null || echo 0) -eq 1 ]]; then
     make_status "$outdir" "success" "Recovered successfully" "$iso" "$started" "$finished" "$uuid"
     send_discord_notification "success" "$label" "$rescued_pct" "$read_errors" "$outdir" "$dev_name"
     log "$dev_name" "════════════════════════════════════════"
