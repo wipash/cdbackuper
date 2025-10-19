@@ -103,8 +103,8 @@ make_status() {
     rescued=$(grep 'rescued:' "$dest/job.log" | tail -1 | awk '{print $2, $3}' || echo "unknown")
     # Get percentage
     rescued_pct=$(grep 'pct rescued:' "$dest/job.log" | tail -1 | awk '{print $3}' || echo "0%")
-    # Get read errors count
-    read_errors=$(grep 'read errors:' "$dest/job.log" | tail -1 | awk '{print $3}' || echo "0")
+    # Read errors is field 6, need to strip trailing comma
+    read_errors=$(grep 'read errors:' "$dest/job.log" | tail -1 | awk '{print $6}' | tr -d ',' || echo "0")
   fi
 
   # Track retry attempts and nodes
@@ -175,7 +175,14 @@ send_discord_notification() {
     color="15158332"  # Red
     emoji="❌"
     title="CD Archive Failed/Partial"
-    description="**Node:** $NODE_NAME  //  $dev_name\n**Label:** $label\n**Rescued:** $rescued_pct\n**Read Errors:** $read_errors${retry_info}\n**Path:** $(basename "$outdir")"
+
+    # Get last 5 lines of log for failure context
+    local log_tail=""
+    if [[ -f "$outdir/job.log" ]]; then
+      log_tail=$(tail -5 "$outdir/job.log" | sed 's/"/\\"/g' || true)
+    fi
+
+    description="**Node:** $NODE_NAME  //  $dev_name\n**Label:** $label\n**Rescued:** $rescued_pct\n**Read Errors:** $read_errors${retry_info}\n**Path:** $(basename "$outdir")\n\n**Last log lines:**\n\`\`\`\n${log_tail}\n\`\`\`"
   fi
 
   # Send Discord webhook (with embed for nice formatting)
@@ -343,7 +350,8 @@ process_disc() {
     rescued_pct=$(grep 'pct rescued:' "$outdir/job.log" | tail -1 | awk '{print $3}' || echo "unknown")
     # Extract numeric value for comparison (e.g., "99.5%" -> 99.5)
     rescued_pct_num="${rescued_pct%\%}"
-    read_errors=$(grep 'read errors:' "$outdir/job.log" | tail -1 | awk '{print $3}' || echo "0")
+    # Read errors is field 6, need to strip trailing comma
+    read_errors=$(grep 'read errors:' "$outdir/job.log" | tail -1 | awk '{print $6}' | tr -d ',' || echo "0")
   fi
 
   # Success requires: ddrescue exit code 0 OR (files extracted AND >95% rescued)
