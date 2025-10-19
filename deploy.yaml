@@ -341,8 +341,8 @@ data:
       # ddrescue fast pass + a few retries
       log "$dev_name" "📀 Running ddrescue (fast pass + $RETRIES retries)..."
       set +e
-      ddrescue -d -b 2048 -n "$dev" "$iso" "$outdir/ddrescue.mapfile" 2>&1
-      ddrescue -d -b 2048 -r"$RETRIES" "$dev" "$iso" "$outdir/ddrescue.mapfile" 2>&1
+      ddrescue -d -b 2048 -n "$dev" "$iso" "$outdir/ddrescue.mapfile" 2>&1 | sed 's/\x1b\[[0-9;]*[a-zA-Z]//g'
+      ddrescue -d -b 2048 -r"$RETRIES" "$dev" "$iso" "$outdir/ddrescue.mapfile" 2>&1 | sed 's/\x1b\[[0-9;]*[a-zA-Z]//g'
       rc=$?
       set -e
     
@@ -447,8 +447,17 @@ data:
       # Eject disc
       log "$dev_name" "⏏️  Ejecting disc..."
       if eject "$dev" 2>/dev/null; then
-        # Give the drive time to physically eject
-        sleep 5
+        # Wait for device to actually report no media (max 30s)
+        local wait_count=0
+        while has_media "$dev" && [[ $wait_count -lt 30 ]]; do
+          sleep 1
+          wait_count=$((wait_count + 1))
+        done
+        if [[ $wait_count -ge 30 ]]; then
+          log "$dev_name" "⚠️  Device still reporting media after 30s"
+        fi
+        # Extra safety buffer
+        sleep 2
       else
         log "$dev_name" "⚠️  Eject command failed"
       fi
