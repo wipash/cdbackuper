@@ -105,7 +105,7 @@ make_status() {
         --arg read_errors "$read_errors" \
         --arg is_retry "$is_retry" \
         --arg retry_nodes "$retry_nodes" \
-        '{node:$node,status:$status,message:$message,iso:$iso,uuid:$uuid,started:$started,finished:$finished,is_retry:($is_retry=="true"),retry_nodes:($retry_nodes|split(","))|select(.retry_nodes != [""]),ddrescue:{rescued:$rescued,rescued_pct:$rescued_pct,read_errors:$read_errors}}' \
+        '{node:$node,status:$status,message:$message,iso:$iso,uuid:$uuid,started:$started,finished:$finished,is_retry:($is_retry=="true"),retry_nodes:(if $retry_nodes == "" then [] else ($retry_nodes|split(",")) end),ddrescue:{rescued:$rescued,rescued_pct:$rescued_pct,read_errors:$read_errors}}' \
     > "$dest/status.json"
 }
 
