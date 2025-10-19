@@ -302,8 +302,8 @@ process_disc() {
   # ddrescue fast pass + a few retries
   log "$dev_name" "📀 Running ddrescue (fast pass + $RETRIES retries)..."
   set +e
-  ddrescue -d -b 2048 -n "$dev" "$iso" "$outdir/ddrescue.mapfile" 2>&1 | sed 's/\x1b\[[0-9;]*[a-zA-Z]//g'
-  ddrescue -d -b 2048 -r"$RETRIES" "$dev" "$iso" "$outdir/ddrescue.mapfile" 2>&1 | sed 's/\x1b\[[0-9;]*[a-zA-Z]//g'
+  ddrescue -d -b 2048 -n "$dev" "$iso" "$outdir/ddrescue.mapfile" 2>&1 | sed 's/\x1b\[[0-9;]*[a-zA-Z]//g' | cat -s
+  ddrescue -d -b 2048 -r"$RETRIES" "$dev" "$iso" "$outdir/ddrescue.mapfile" 2>&1 | sed 's/\x1b\[[0-9;]*[a-zA-Z]//g' | cat -s
   rc=$?
   set -e
 
