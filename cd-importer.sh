@@ -2,7 +2,7 @@
 set -Eeuo pipefail
 
 
-VERSION="1.0.2"
+VERSION="1.0.3"
 # --- Configuration via env (with defaults) -------------------------------
 DATA_ROOT="${DATA_ROOT:-/data}"         # PVC mount
 DEVICE_GLOB="${DEVICE_GLOB:-/dev/sr*}"  # CD/DVD devices to watch

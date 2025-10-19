@@ -76,6 +76,8 @@ The main logic lives in `cd-importer.sh`. After editing it, regenerate `deploy.y
 shellcheck cd-importer.sh
 ```
 
+**Note**: Bump the `VERSION` variable in `cd-importer.sh` when making changes, to track deployments.
+
 **Note**: `deploy.yaml` is generated from `deploy.yaml.template` and should not be edited directly. The build script injects `cd-importer.sh` into the ConfigMap section of the template.
 
 ### Building and Deploying
