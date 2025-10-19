@@ -4,7 +4,7 @@ set -Eeuo pipefail
 # --- Configuration via env (with defaults) -------------------------------
 DATA_ROOT="${DATA_ROOT:-/data}"         # PVC mount
 DEVICE_GLOB="${DEVICE_GLOB:-/dev/sr*}"  # CD/DVD devices to watch
-RETRIES="${RETRIES:-2}"                 # ddrescue retry passes
+RETRIES="${RETRIES:-3}"                 # ddrescue retry passes
 TIMEOUT="${TIMEOUT:-7200}"              # seconds, per-disc guard
 EXTRACT_FILES="${EXTRACT_FILES:-true}"  # true|false
 POLL_SECS="${POLL_SECS:-5}"
@@ -193,7 +193,7 @@ process_disc() {
   log "$dev_name" "📀 Running ddrescue (fast pass + $RETRIES retries)..."
   set +e
   ddrescue -d -b 2048 -n "$dev" "$iso" "$outdir/ddrescue.mapfile" 2>&1 | tee "$outdir/ddrescue-output.txt"
-  ddrescue -d -b 2048 -R -r"$RETRIES" "$dev" "$iso" "$outdir/ddrescue.mapfile" 2>&1 | tee -a "$outdir/ddrescue-output.txt"
+  ddrescue -d -b 2048 -r"$RETRIES" "$dev" "$iso" "$outdir/ddrescue.mapfile" 2>&1 | tee -a "$outdir/ddrescue-output.txt"
   rc=$?
   set -e
 
