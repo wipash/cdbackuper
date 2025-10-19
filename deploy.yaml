@@ -117,11 +117,11 @@ data:
         return 0
       fi
     
-      log "$dev_name" "🖼️  Found $psd_count PSD file(s), generating previews..."
+      log "$dev_name" "🖼️  Found $psd_count PSD file(s), generating jpgs..."
     
       # Convert each PSD
       while IFS= read -r -d '' psd; do
-        local jpg="${psd%.psd}.preview.jpg"
+        local jpg="${psd%.psd}.jpg"
         if convert "${psd}[0]" -quality 85 "$jpg" 2>/dev/null; then
           ((converted_count++))
         else
@@ -129,7 +129,7 @@ data:
         fi
       done < <(find "$files_dir" -type f -iname "*.psd" -print0 2>/dev/null)
     
-      log "$dev_name" "✓ Converted $converted_count/$psd_count PSD preview(s)"
+      log "$dev_name" "✓ Converted $converted_count/$psd_count PSD to jpg(s)"
     }
     
     make_status() {
