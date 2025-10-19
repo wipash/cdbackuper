@@ -83,7 +83,7 @@ convert_psd_previews() {
   # Convert each PSD
   while IFS= read -r -d '' psd; do
     local jpg="${psd%.psd}.preview.jpg"
-    if magick "${psd}[0]" -quality 85 "$jpg" 2>/dev/null; then
+    if convert "${psd}[0]" -quality 85 "$jpg" 2>/dev/null; then
       ((converted_count++))
     else
       log "$dev_name" "⚠️  Failed to convert: $(basename "$psd")"
