@@ -15,6 +15,11 @@ NODE_NAME="${NODE_NAME:-$(cat /etc/hostname)}"
 
 mkdir -p /var/run/cd-import /mnt/work
 
+# FIX: Ensure /dev/fd exists for process substitution (missing in newer Talos/containerd)
+if [[ ! -e /dev/fd ]]; then
+  ln -sf /proc/self/fd /dev/fd
+fi
+
 # Enhanced logging with device context
 log() {
   local dev_id="${1:-}"
