@@ -84,6 +84,8 @@ convert_psd_previews() {
   while IFS= read -r -d '' psd; do
     local jpg="${psd%.psd}.jpg"
     if convert "${psd}[0]" -quality 85 "$jpg" 2>/dev/null; then
+      # Match JPG timestamp to PSD
+      touch -r "$psd" "$jpg" 2>/dev/null || true
       ((converted_count++))
     else
       log "$dev_name" "⚠️  Failed to convert: $(basename "$psd")"
