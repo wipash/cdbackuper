@@ -1,0 +1,77 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: psd-preview-backfill
+  namespace: cd-import
+spec:
+  ttlSecondsAfterFinished: 3600  # Auto-cleanup after 1 hour
+  template:
+    metadata:
+      labels:
+        app: psd-backfill
+    spec:
+      restartPolicy: OnFailure
+      securityContext:
+        fsGroup: 65537
+      containers:
+      - name: converter
+        image: ghcr.io/wipash/cdbackuper:latest@sha256:917c9074daba1fed3bcdc0f90a351dd0c7c60309da1eca4281ccdcad295d4e83
+        imagePullPolicy: Always
+        command:
+        - /bin/bash
+        - -c
+        - |
+          set -euo pipefail
+
+          echo "Starting PSD preview backfill at $(date)"
+          echo "Scanning /data for PSD files..."
+
+          total_found=0
+          total_converted=0
+          total_failed=0
+
+          # Find all PSD files (case-insensitive) in extracted directories
+          while IFS= read -r -d '' psd; do
+            total_found=$((total_found + 1))
+
+            # Determine output filename
+            base="${psd%.[pP][sS][dD]}"
+            jpg="${base}.jpg"
+
+            # Convert layer 0 to JPG (always, even if exists)
+            echo "  [CONV] Converting: $(basename "$psd")"
+            if convert "${psd}[0]" -quality 85 "$jpg" 2>&1; then
+              # Match JPG timestamp to PSD
+              touch -r "$psd" "$jpg" 2>/dev/null || true
+              total_converted=$((total_converted + 1))
+              echo "  [OK]   Created: $(basename "$jpg")"
+            else
+              total_failed=$((total_failed + 1))
+              echo "  [FAIL] Failed to convert: $(basename "$psd")"
+            fi
+          done < <(find /data -type f \( -iname "*.psd" \) -path "*/files/*" -print0 2>/dev/null || true)
+
+          echo ""
+          echo "════════════════════════════════════════"
+          echo "Backfill complete at $(date)"
+          echo "  Found:     $total_found PSD files"
+          echo "  Converted: $total_converted"
+          echo "  Failed:    $total_failed"
+          echo "════════════════════════════════════════"
+
+        volumeMounts:
+        - name: data
+          mountPath: /data
+
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "500m"
+          limits:
+            memory: "1Gi"
+            cpu: "2000m"
+
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: cd-archive-pvc
