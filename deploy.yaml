@@ -102,6 +102,36 @@ data:
       isoinfo -d -i "$iso" > "$dest/isoinfo.txt" 2>/dev/null || true
     }
     
+    convert_psd_previews() {
+      local files_dir="$1"
+      local dev_name="$2"
+      local psd_count=0
+      local converted_count=0
+    
+      # Count PSDs first
+      while IFS= read -r -d '' psd; do
+        ((psd_count++))
+      done < <(find "$files_dir" -type f -iname "*.psd" -print0 2>/dev/null)
+    
+      if [[ $psd_count -eq 0 ]]; then
+        return 0
+      fi
+    
+      log "$dev_name" "🖼️  Found $psd_count PSD file(s), generating previews..."
+    
+      # Convert each PSD
+      while IFS= read -r -d '' psd; do
+        local jpg="${psd%.psd}.preview.jpg"
+        if magick "${psd}[0]" -quality 85 "$jpg" 2>/dev/null; then
+          ((converted_count++))
+        else
+          log "$dev_name" "⚠️  Failed to convert: $(basename "$psd")"
+        fi
+      done < <(find "$files_dir" -type f -iname "*.psd" -print0 2>/dev/null)
+    
+      log "$dev_name" "✓ Converted $converted_count/$psd_count PSD preview(s)"
+    }
+    
     make_status() {
       local dest="$1" status="$2" msg="$3" iso="$4" started="$5" finished="$6" uuid="$7" is_retry="$8"
       local rescued="" rescued_pct="" read_errors=""
@@ -318,6 +348,9 @@ data:
               umount /mnt/work || true
               files_extracted=true
               log "$dev_name" "✓ Files extracted successfully"
+    
+              # Generate PSD previews
+              convert_psd_previews "$outdir/files" "$dev_name"
             fi
           else
             log "$dev_name" "⚠️  Could not mount ISO (non-fatal)"
@@ -454,7 +487,7 @@ spec:
 
       containers:
       - name: watcher
-        image: ghcr.io/wipash/cdbackuper:latest
+        image: ghcr.io/wipash/cdbackuper:latest@sha256:917c9074daba1fed3bcdc0f90a351dd0c7c60309da1eca4281ccdcad295d4e83
         imagePullPolicy: Always
         securityContext:
           privileged: true

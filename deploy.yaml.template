@@ -70,7 +70,7 @@ spec:
 
       containers:
       - name: watcher
-        image: ghcr.io/wipash/cdbackuper:latest
+        image: ghcr.io/wipash/cdbackuper:latest@sha256:917c9074daba1fed3bcdc0f90a351dd0c7c60309da1eca4281ccdcad295d4e83
         imagePullPolicy: Always
         securityContext:
           privileged: true

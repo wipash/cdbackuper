@@ -30,7 +30,8 @@ The system runs as a **Kubernetes DaemonSet** in the `cd-import` namespace. This
    ```
    CD inserted → Device detection → Duplicate check → Lock acquired → Background job spawned →
    Metadata dump → ddrescue (fast + retry passes, resumes from mapfile if duplicate) →
-   ISO validation → File extraction → Discord notification → Disc ejection → Lock released
+   ISO validation → File extraction → PSD preview generation → Discord notification →
+   Disc ejection → Lock released
 
    User replies with label → Bot writes to label.txt
    ```
@@ -157,6 +158,7 @@ Each processed disc creates:
 ├── label.txt                           # User-provided label (created by Discord bot on reply)
 ├── disc.iso                            # Raw ISO image (deleted if extraction succeeds)
 └── files/                              # Extracted files from ISO
+    └── *.preview.jpg                   # Auto-generated JPG previews for PSD files (layer 0)
 ```
 
 **Retry Workflow**: When the same disc is re-inserted (detected by UUID):
