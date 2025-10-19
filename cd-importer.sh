@@ -2,7 +2,7 @@
 set -Eeuo pipefail
 
 
-VERSION="1.0.1"
+VERSION="1.0.2"
 # --- Configuration via env (with defaults) -------------------------------
 DATA_ROOT="${DATA_ROOT:-/data}"         # PVC mount
 DEVICE_GLOB="${DEVICE_GLOB:-/dev/sr*}"  # CD/DVD devices to watch
@@ -317,26 +317,28 @@ process_disc() {
 
   iso_info_dump "$iso" "$outdir"
 
-  # FIX #5: Check ISO integrity before attempting to mount/extract
+  # FIX #5: Try to extract files (support both ISO 9660 and UDF formats)
   local files_extracted=false
+  local mount_error=""
   if [[ "${EXTRACT_FILES}" == "true" && -s "$iso" ]]; then
-    if ! isoinfo -d -i "$iso" &>/dev/null; then
-      log "$dev_name" "⚠️  ISO appears corrupt, skipping file extraction"
-    else
-      log "$dev_name" "📂 Extracting files from ISO..."
-      mkdir -p "$outdir/files"
-      if mount -o loop,ro "$iso" /mnt/work 2>/dev/null; then
-        if mountpoint -q /mnt/work; then
-          rsync -a /mnt/work/ "$outdir/files/" || true
-          umount /mnt/work || true
-          files_extracted=true
-          log "$dev_name" "✓ Files extracted successfully"
+    log "$dev_name" "📂 Extracting files from ISO..."
+    mkdir -p "$outdir/files"
 
-          # Generate PSD previews
-          convert_psd_previews "$outdir/files" "$dev_name"
-        fi
-      else
-        log "$dev_name" "⚠️  Could not mount ISO (non-fatal)"
+    # Try mounting (works for both ISO 9660 and UDF formats)
+    mount_error=$(mount -o loop,ro "$iso" /mnt/work 2>&1) || true
+    if mountpoint -q /mnt/work; then
+      rsync -a /mnt/work/ "$outdir/files/" || true
+      umount /mnt/work || true
+      files_extracted=true
+      log "$dev_name" "✓ Files extracted successfully"
+
+      # Generate PSD previews
+      convert_psd_previews "$outdir/files" "$dev_name"
+    else
+      log "$dev_name" "⚠️  Could not mount ISO - may be corrupt or unsupported format"
+      if [[ -n "$mount_error" ]]; then
+        log "$dev_name" "   Mount error: ${mount_error:0:200}"
+        echo "$mount_error" > "$outdir/mount-error.txt"
       fi
     fi
   fi
@@ -361,8 +363,25 @@ process_disc() {
     read_errors=$(grep 'read errors:' "$outdir/job.log" | tail -1 | awk '{print $6}' | tr -d ',' || echo "0")
   fi
 
-  # Success requires: ddrescue exit code 0 OR (files extracted AND >95% rescued)
-  if [[ $rc -eq 0 ]] || [[ "$files_extracted" == "true" && $(echo "$rescued_pct_num >= 95" | bc -l 2>/dev/null || echo 0) -eq 1 ]]; then
+  # Success criteria:
+  # - If EXTRACT_FILES=true: require files to be extracted successfully (with >95% rescued as fallback)
+  # - If EXTRACT_FILES=false: require ddrescue exit code 0
+  local is_success=false
+  if [[ "${EXTRACT_FILES}" == "true" ]]; then
+    # Success if files extracted AND (ddrescue succeeded OR rescued >= 95%)
+    if [[ "$files_extracted" == "true" ]]; then
+      if [[ $rc -eq 0 ]] || [[ $(echo "$rescued_pct_num >= 95" | bc -l 2>/dev/null || echo 0) -eq 1 ]]; then
+        is_success=true
+      fi
+    fi
+  else
+    # Just wanted the ISO, so success if ddrescue succeeded
+    if [[ $rc -eq 0 ]]; then
+      is_success=true
+    fi
+  fi
+
+  if [[ "$is_success" == "true" ]]; then
     make_status "$outdir" "success" "Recovered successfully" "$iso" "$started" "$finished" "$uuid" "$is_retry"
     send_discord_notification "success" "$label" "$rescued_pct" "$read_errors" "$outdir" "$dev_name" "$is_retry"
     log "$dev_name" "════════════════════════════════════════"
