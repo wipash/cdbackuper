@@ -70,9 +70,7 @@ convert_psd_previews() {
   local converted_count=0
 
   # Count PSDs first
-  while IFS= read -r -d '' psd; do
-    ((psd_count++))
-  done < <(find "$files_dir" -type f -iname "*.psd" -print0 2>/dev/null)
+  psd_count=$(find "$files_dir" -type f -iname "*.psd" 2>/dev/null | wc -l)
 
   if [[ $psd_count -eq 0 ]]; then
     return 0
@@ -81,32 +79,32 @@ convert_psd_previews() {
   log "$dev_name" "🖼️  Found $psd_count PSD file(s), generating jpgs..."
 
   # Convert each PSD
-  while IFS= read -r -d '' psd; do
+  find "$files_dir" -type f -iname "*.psd" -print0 2>/dev/null | while IFS= read -r -d '' psd; do
     local jpg="${psd%.psd}.jpg"
     if convert "${psd}[0]" -quality 85 "$jpg" 2>/dev/null; then
       # Match JPG timestamp to PSD
       touch -r "$psd" "$jpg" 2>/dev/null || true
-      ((converted_count++))
+      converted_count=$((converted_count + 1))
     else
       log "$dev_name" "⚠️  Failed to convert: $(basename "$psd")"
     fi
-  done < <(find "$files_dir" -type f -iname "*.psd" -print0 2>/dev/null)
+  done
 
-  log "$dev_name" "✓ Converted $converted_count/$psd_count PSD to jpg(s)"
+  log "$dev_name" "✓ PSD conversion complete"
 }
 
 make_status() {
   local dest="$1" status="$2" msg="$3" iso="$4" started="$5" finished="$6" uuid="$7" is_retry="$8"
   local rescued="" rescued_pct="" read_errors=""
 
-  # Parse ddrescue output file (human-readable text)
-  if [[ -f "$dest/ddrescue-output.txt" ]]; then
+  # Parse job log (contains ddrescue output and all other logs)
+  if [[ -f "$dest/job.log" ]]; then
     # Get the last "rescued:" line (final status)
-    rescued=$(grep 'rescued:' "$dest/ddrescue-output.txt" | tail -1 | awk '{print $2, $3}' || echo "unknown")
+    rescued=$(grep 'rescued:' "$dest/job.log" | tail -1 | awk '{print $2, $3}' || echo "unknown")
     # Get percentage
-    rescued_pct=$(grep 'pct rescued:' "$dest/ddrescue-output.txt" | tail -1 | awk '{print $3}' || echo "0%")
+    rescued_pct=$(grep 'pct rescued:' "$dest/job.log" | tail -1 | awk '{print $3}' || echo "0%")
     # Get read errors count
-    read_errors=$(grep 'read errors:' "$dest/ddrescue-output.txt" | tail -1 | awk '{print $3}' || echo "0")
+    read_errors=$(grep 'read errors:' "$dest/job.log" | tail -1 | awk '{print $3}' || echo "0")
   fi
 
   # Track retry attempts and nodes
@@ -201,7 +199,7 @@ process_disc() {
   local dev="$1"
   local dev_name
   dev_name=$(basename "$dev")
-  local started finished label uuid outdir iso rc=0 timeout_pid is_retry=false
+  local started finished label uuid outdir iso rc=0 timeout_pid is_retry=false job_log
 
   # FIX #3: Clean mount point before use
   umount /mnt/work 2>/dev/null || true
@@ -235,6 +233,20 @@ process_disc() {
   # Detect duplicate disc by checking if output directory already exists
   if [[ -d "$outdir" && (-f "$outdir/status.json" || -f "$outdir/ddrescue.mapfile") ]]; then
     is_retry=true
+    # Backup previous job log if it exists (before we start redirecting to it)
+    if [[ -f "$outdir/job.log" ]]; then
+      cp "$outdir/job.log" "$outdir/job.log.backup-$(date -u +%Y%m%d-%H%M%S)"
+    fi
+  else
+    mkdir -p "$outdir"
+  fi
+
+  # Redirect all subsequent output to job.log (and still show in stdout for kubectl logs)
+  job_log="$outdir/job.log"
+  exec > >(tee -a "$job_log") 2>&1
+
+  # Log initialization info (now captured in job.log)
+  if [[ "$is_retry" == "true" ]]; then
     log "$dev_name" "════════════════════════════════════════"
     log "$dev_name" "🔄 DUPLICATE DETECTED - Retrying recovery"
     log "$dev_name" "   Label: '$label'"
@@ -251,13 +263,7 @@ process_disc() {
     log "$dev_name" "   Current: Node=$NODE_NAME"
     log "$dev_name" "   Will resume using existing mapfile"
     log "$dev_name" "════════════════════════════════════════"
-
-    # Backup previous ddrescue output if it exists
-    if [[ -f "$outdir/ddrescue-output.txt" ]]; then
-      cp "$outdir/ddrescue-output.txt" "$outdir/ddrescue-output.txt.backup-$(date -u +%Y%m%d-%H%M%S)"
-    fi
   else
-    mkdir -p "$outdir"
     log "$dev_name" "════════════════════════════════════════"
     log "$dev_name" "🔵 STARTED - Label: '$label'"
     log "$dev_name" "   Output: $(basename "$outdir")"
@@ -282,8 +288,8 @@ process_disc() {
   # ddrescue fast pass + a few retries
   log "$dev_name" "📀 Running ddrescue (fast pass + $RETRIES retries)..."
   set +e
-  ddrescue -d -b 2048 -n "$dev" "$iso" "$outdir/ddrescue.mapfile" 2>&1 | tee "$outdir/ddrescue-output.txt"
-  ddrescue -d -b 2048 -r"$RETRIES" "$dev" "$iso" "$outdir/ddrescue.mapfile" 2>&1 | tee -a "$outdir/ddrescue-output.txt"
+  ddrescue -d -b 2048 -n "$dev" "$iso" "$outdir/ddrescue.mapfile" 2>&1
+  ddrescue -d -b 2048 -r"$RETRIES" "$dev" "$iso" "$outdir/ddrescue.mapfile" 2>&1
   rc=$?
   set -e
 
@@ -333,11 +339,11 @@ process_disc() {
   local rescued_pct="unknown"
   local rescued_pct_num=0
   local read_errors="0"
-  if [[ -f "$outdir/ddrescue-output.txt" ]]; then
-    rescued_pct=$(grep 'pct rescued:' "$outdir/ddrescue-output.txt" | tail -1 | awk '{print $3}' || echo "unknown")
+  if [[ -f "$outdir/job.log" ]]; then
+    rescued_pct=$(grep 'pct rescued:' "$outdir/job.log" | tail -1 | awk '{print $3}' || echo "unknown")
     # Extract numeric value for comparison (e.g., "99.5%" -> 99.5)
     rescued_pct_num="${rescued_pct%\%}"
-    read_errors=$(grep 'read errors:' "$outdir/ddrescue-output.txt" | tail -1 | awk '{print $3}' || echo "0")
+    read_errors=$(grep 'read errors:' "$outdir/job.log" | tail -1 | awk '{print $3}' || echo "0")
   fi
 
   # Success requires: ddrescue exit code 0 OR (files extracted AND >95% rescued)
