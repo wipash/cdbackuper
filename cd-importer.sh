@@ -64,8 +64,8 @@ iso_info_dump() {
 }
 
 make_status() {
-  local dest="$1" status="$2" msg="$3" iso="$4" started="$5" finished="$6" uuid="$7"
-  local rescued="" errors="" rescued_pct="" read_errors=""
+  local dest="$1" status="$2" msg="$3" iso="$4" started="$5" finished="$6" uuid="$7" is_retry="$8"
+  local rescued="" rescued_pct="" read_errors=""
 
   # Parse ddrescue output file (human-readable text)
   if [[ -f "$dest/ddrescue-output.txt" ]]; then
@@ -75,6 +75,22 @@ make_status() {
     rescued_pct=$(grep 'pct rescued:' "$dest/ddrescue-output.txt" | tail -1 | awk '{print $3}' || echo "0%")
     # Get read errors count
     read_errors=$(grep 'read errors:' "$dest/ddrescue-output.txt" | tail -1 | awk '{print $3}' || echo "0")
+  fi
+
+  # Track retry attempts and nodes
+  local retry_nodes=""
+  if [[ -f "$dest/status.json" ]]; then
+    # Preserve previous nodes list
+    retry_nodes=$(jq -r '.retry_nodes // [] | join(",")' "$dest/status.json" 2>/dev/null || echo "")
+  fi
+
+  if [[ "$is_retry" == "true" ]]; then
+    # Append current node to retry list
+    if [[ -n "$retry_nodes" ]]; then
+      retry_nodes="${retry_nodes},${NODE_NAME}"
+    else
+      retry_nodes="${NODE_NAME}"
+    fi
   fi
 
   jq -n --arg node "$NODE_NAME" \
@@ -87,7 +103,9 @@ make_status() {
         --arg rescued "$rescued" \
         --arg rescued_pct "$rescued_pct" \
         --arg read_errors "$read_errors" \
-        '{node:$node,status:$status,message:$message,iso:$iso,uuid:$uuid,started:$started,finished:$finished,ddrescue:{rescued:$rescued,rescued_pct:$rescued_pct,read_errors:$read_errors}}' \
+        --arg is_retry "$is_retry" \
+        --arg retry_nodes "$retry_nodes" \
+        '{node:$node,status:$status,message:$message,iso:$iso,uuid:$uuid,started:$started,finished:$finished,is_retry:($is_retry=="true"),retry_nodes:($retry_nodes|split(","))|select(.retry_nodes != [""]),ddrescue:{rescued:$rescued,rescued_pct:$rescued_pct,read_errors:$read_errors}}' \
     > "$dest/status.json"
 }
 
@@ -98,22 +116,36 @@ send_discord_notification() {
   local read_errors="$4"
   local outdir="$5"
   local dev_name="$6"
+  local is_retry="${7:-false}"
 
   # Skip if webhook not configured
   [[ -z "${DISCORD_WEBHOOK_URL:-}" ]] && return 0
 
-  local color emoji title description
+  local color emoji title description retry_info=""
+
+  # Add retry information if this is a duplicate disc
+  if [[ "$is_retry" == "true" ]]; then
+    local retry_nodes=""
+    if [[ -f "$outdir/status.json" ]]; then
+      retry_nodes=$(jq -r '.retry_nodes // [] | join(", ")' "$outdir/status.json" 2>/dev/null || echo "")
+    fi
+    if [[ -n "$retry_nodes" ]]; then
+      retry_info="\n🔄 **Retry attempt** (Previous: $retry_nodes)"
+    else
+      retry_info="\n🔄 **Retry attempt**"
+    fi
+  fi
 
   if [[ "$status" == "success" ]]; then
     color="3066993"  # Green
     emoji="✅"
     title="CD Archived Successfully"
-    description="**Label:** $label\n**Device:** $dev_name\n**Node:** $NODE_NAME\n**Rescued:** $rescued_pct\n**Path:** $(basename "$outdir")\n\n💬 *Reply to add disc label*"
+    description="**Node:** $NODE_NAME  //  $dev_name\n**Label:** $label\n**Rescued:** $rescued_pct${retry_info}\n**Path:** $(basename "$outdir")\n\n💬 *Reply to add disc label*"
   else
     color="15158332"  # Red
     emoji="❌"
     title="CD Archive Failed/Partial"
-    description="**Label:** $label\n**Device:** $dev_name\n**Node:** $NODE_NAME\n**Rescued:** $rescued_pct\n**Read Errors:** $read_errors\n**Path:** $(basename "$outdir")"
+    description="**Node:** $NODE_NAME  //  $dev_name\n**Label:** $label\n**Rescued:** $rescued_pct\n**Read Errors:** $read_errors${retry_info}\n**Path:** $(basename "$outdir")"
   fi
 
   # Send Discord webhook (with embed for nice formatting)
@@ -135,8 +167,9 @@ send_discord_notification() {
 
 process_disc() {
   local dev="$1"
-  local dev_name=$(basename "$dev")
-  local started finished label uuid outdir iso rc=0 timeout_pid
+  local dev_name
+  dev_name=$(basename "$dev")
+  local started finished label uuid outdir iso rc=0 timeout_pid is_retry=false
 
   # FIX #3: Clean mount point before use
   umount /mnt/work 2>/dev/null || true
@@ -167,12 +200,37 @@ process_disc() {
     outdir="$DATA_ROOT/${started}${label_suffix}"
   fi
 
-  mkdir -p "$outdir"
+  # Detect duplicate disc by checking if output directory already exists
+  if [[ -d "$outdir" && (-f "$outdir/status.json" || -f "$outdir/ddrescue.mapfile") ]]; then
+    is_retry=true
+    log "$dev_name" "════════════════════════════════════════"
+    log "$dev_name" "🔄 DUPLICATE DETECTED - Retrying recovery"
+    log "$dev_name" "   Label: '$label'"
+    log "$dev_name" "   Output: $(basename "$outdir")"
 
-  log "$dev_name" "════════════════════════════════════════"
-  log "$dev_name" "🔵 STARTED - Label: '$label'"
-  log "$dev_name" "   Output: $(basename "$outdir")"
-  log "$dev_name" "════════════════════════════════════════"
+    # Read previous attempt info
+    if [[ -f "$outdir/status.json" ]]; then
+      local prev_nodes prev_pct
+      prev_nodes=$(jq -r '.node // "unknown"' "$outdir/status.json" 2>/dev/null || echo "unknown")
+      prev_pct=$(jq -r '.ddrescue.rescued_pct // "unknown"' "$outdir/status.json" 2>/dev/null || echo "unknown")
+      log "$dev_name" "   Previous: Node=$prev_nodes, Rescued=$prev_pct"
+    fi
+
+    log "$dev_name" "   Current: Node=$NODE_NAME"
+    log "$dev_name" "   Will resume using existing mapfile"
+    log "$dev_name" "════════════════════════════════════════"
+
+    # Backup previous ddrescue output if it exists
+    if [[ -f "$outdir/ddrescue-output.txt" ]]; then
+      cp "$outdir/ddrescue-output.txt" "$outdir/ddrescue-output.txt.backup-$(date -u +%Y%m%d-%H%M%S)"
+    fi
+  else
+    mkdir -p "$outdir"
+    log "$dev_name" "════════════════════════════════════════"
+    log "$dev_name" "🔵 STARTED - Label: '$label'"
+    log "$dev_name" "   Output: $(basename "$outdir")"
+    log "$dev_name" "════════════════════════════════════════"
+  fi
 
   dump_metadata "$dev" "$outdir"
 
@@ -243,22 +301,28 @@ process_disc() {
   if [[ -f "$outdir/ddrescue-output.txt" ]]; then
     rescued_pct=$(grep 'pct rescued:' "$outdir/ddrescue-output.txt" | tail -1 | awk '{print $3}' || echo "unknown")
     # Extract numeric value for comparison (e.g., "99.5%" -> 99.5)
-    rescued_pct_num=$(echo "$rescued_pct" | sed 's/%$//' || echo "0")
+    rescued_pct_num="${rescued_pct%\%}"
     read_errors=$(grep 'read errors:' "$outdir/ddrescue-output.txt" | tail -1 | awk '{print $3}' || echo "0")
   fi
 
   # Success requires: ddrescue exit code 0 OR (files extracted AND >95% rescued)
   if [[ $rc -eq 0 ]] || [[ "$files_extracted" == "true" && $(echo "$rescued_pct_num >= 95" | bc -l 2>/dev/null || echo 0) -eq 1 ]]; then
-    make_status "$outdir" "success" "Recovered successfully" "$iso" "$started" "$finished" "$uuid"
-    send_discord_notification "success" "$label" "$rescued_pct" "$read_errors" "$outdir" "$dev_name"
+    make_status "$outdir" "success" "Recovered successfully" "$iso" "$started" "$finished" "$uuid" "$is_retry"
+    send_discord_notification "success" "$label" "$rescued_pct" "$read_errors" "$outdir" "$dev_name" "$is_retry"
     log "$dev_name" "════════════════════════════════════════"
     log "$dev_name" "✅ SUCCESS - Rescued: $rescued_pct"
+    if [[ "$is_retry" == "true" ]]; then
+      log "$dev_name" "   🔄 This was a retry attempt"
+    fi
     log "$dev_name" "════════════════════════════════════════"
   else
-    make_status "$outdir" "partial_or_failed" "ddrescue exited rc=$rc after retries" "$iso" "$started" "$finished" "$uuid"
-    send_discord_notification "failure" "$label" "$rescued_pct" "$read_errors" "$outdir" "$dev_name"
+    make_status "$outdir" "partial_or_failed" "ddrescue exited rc=$rc after retries" "$iso" "$started" "$finished" "$uuid" "$is_retry"
+    send_discord_notification "failure" "$label" "$rescued_pct" "$read_errors" "$outdir" "$dev_name" "$is_retry"
     log "$dev_name" "════════════════════════════════════════"
     log "$dev_name" "❌ FAILED - Rescued: $rescued_pct, Errors: $read_errors"
+    if [[ "$is_retry" == "true" ]]; then
+      log "$dev_name" "   🔄 This was a retry attempt - try another node/drive?"
+    fi
     log "$dev_name" "   See: $(basename "$outdir")/status.json"
     log "$dev_name" "════════════════════════════════════════"
   fi
@@ -293,7 +357,7 @@ while true; do
     if ! kill -0 "$pid" 2>/dev/null; then
       wait "$pid" 2>/dev/null || true
       finished_dev="${active_jobs[$pid]}"
-      unset active_jobs[$pid]
+      unset 'active_jobs[$pid]'
       log "$(basename "$finished_dev")" "Job completed (PID: $pid)"
     fi
   done

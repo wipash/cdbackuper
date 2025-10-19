@@ -28,12 +28,18 @@ The system runs as a **Kubernetes DaemonSet** in the `cd-import` namespace. This
 
 3. **Data Flow**:
    ```
-   CD inserted → Device detection → Lock acquired → Background job spawned →
-   Metadata dump → ddrescue (fast + retry passes) → ISO validation →
-   File extraction → Discord notification → Disc ejection → Lock released
+   CD inserted → Device detection → Duplicate check → Lock acquired → Background job spawned →
+   Metadata dump → ddrescue (fast + retry passes, resumes from mapfile if duplicate) →
+   ISO validation → File extraction → Discord notification → Disc ejection → Lock released
 
    User replies with label → Bot writes to label.txt
    ```
+
+   **Duplicate Detection & Retry**: When a disc is re-inserted, the system detects it by UUID and automatically:
+   - Resumes ddrescue from the existing mapfile (retrying only failed sectors)
+   - Backs up previous ddrescue output with timestamp
+   - Tracks which nodes have attempted recovery in `status.json`
+   - Sends Discord notification indicating retry attempt and previous nodes
 
 4. **Storage Architecture**:
    - **NFS PersistentVolume** mounted at `/data` (1Ti, ReadWriteMany)
@@ -142,15 +148,22 @@ Configured in `deploy.yaml` under container env section:
 Each processed disc creates:
 ```
 /data/{UUID}_{LABEL}/
-├── blkid.txt              # Device metadata
-├── isoinfo.txt            # ISO filesystem info
-├── ddrescue.mapfile       # ddrescue recovery map
-├── ddrescue-output.txt    # Full ddrescue stdout/stderr
-├── status.json            # Processing status and stats
-├── label.txt              # User-provided label (created by Discord bot on reply)
-├── disc.iso               # Raw ISO image (deleted if extraction succeeds)
-└── files/                 # Extracted files from ISO
+├── blkid.txt                           # Device metadata
+├── isoinfo.txt                         # ISO filesystem info
+├── ddrescue.mapfile                    # ddrescue recovery map (persistent across retries)
+├── ddrescue-output.txt                 # Full ddrescue stdout/stderr (current attempt)
+├── ddrescue-output.txt.backup-YYYYMMDD-HHMMSS  # Previous attempt backups (retry only)
+├── status.json                         # Processing status, stats, and retry history
+├── label.txt                           # User-provided label (created by Discord bot on reply)
+├── disc.iso                            # Raw ISO image (deleted if extraction succeeds)
+└── files/                              # Extracted files from ISO
 ```
+
+**Retry Workflow**: When the same disc is re-inserted (detected by UUID):
+- The existing `ddrescue.mapfile` is reused to resume from where the last attempt left off
+- Previous `ddrescue-output.txt` is backed up with a timestamp
+- `status.json` tracks `is_retry: true` and lists all nodes that have attempted recovery in `retry_nodes`
+- Different hardware may successfully read sectors that previously failed
 
 ## Troubleshooting
 
@@ -161,6 +174,41 @@ Each processed disc creates:
 3. **Disc not detected**: Check udev mounts and device permissions
 4. **ISO extraction fails**: Check `isoinfo.txt` for corruption indicators
 5. **Timeout killing processes**: Increase `TIMEOUT` env var for slow/damaged discs
+
+### Retrying Failed Discs
+
+If a disc fails to fully recover (partial recovery with read errors):
+
+1. **Check the failure details**:
+   ```bash
+   # View the disc's status
+   cat /data/{UUID}_{LABEL}/status.json | jq '.'
+
+   # Check which nodes attempted recovery
+   cat /data/{UUID}_{LABEL}/status.json | jq '.retry_nodes'
+   ```
+
+2. **Try a different node/drive**: Simply re-insert the same disc on a different node in your cluster. The system will:
+   - Automatically detect it's the same disc (by UUID)
+   - Resume ddrescue from the existing mapfile
+   - Only attempt to read the sectors that previously failed
+   - Send a Discord notification showing it's a retry attempt
+
+3. **Monitor retry progress**:
+   ```bash
+   # Watch logs for the retry attempt
+   kubectl -n cd-import logs -f -l app=cd-importer --prefix=true | grep "DUPLICATE DETECTED"
+
+   # Check ddrescue progress during retry
+   tail -f /data/{UUID}_{LABEL}/ddrescue-output.txt
+   ```
+
+4. **Review retry history**: Previous ddrescue outputs are preserved as backups:
+   ```bash
+   ls -la /data/{UUID}_{LABEL}/ddrescue-output.txt.backup-*
+   ```
+
+**Note**: Duplicate detection relies on the disc having a filesystem UUID. Discs without UUIDs (audio CDs, blank discs) will create new directories on each insertion and won't trigger retry logic.
 
 ### Node Affinity
 
