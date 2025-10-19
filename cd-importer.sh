@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
+
+VERSION="1.0.1"
 # --- Configuration via env (with defaults) -------------------------------
 DATA_ROOT="${DATA_ROOT:-/data}"         # PVC mount
 DEVICE_GLOB="${DEVICE_GLOB:-/dev/sr*}"  # CD/DVD devices to watch
@@ -397,7 +399,7 @@ process_disc() {
 declare -A active_jobs
 
 # Main loop
-log "" "🚀 Starting CD watcher - monitoring: $DEVICE_GLOB"
+log "" "🚀 Starting CD watcher v$VERSION - monitoring: $DEVICE_GLOB"
 log "" "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
 while true; do
