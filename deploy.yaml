@@ -41,7 +41,7 @@ data:
     set -Eeuo pipefail
     
     
-    VERSION="1.0.5"
+    VERSION="1.0.6"
     # --- Configuration via env (with defaults) -------------------------------
     DATA_ROOT="${DATA_ROOT:-/data}"         # PVC mount
     DEVICE_GLOB="${DEVICE_GLOB:-/dev/sr*}"  # CD/DVD devices to watch
@@ -220,7 +220,8 @@ data:
         color="3066993"  # Green
         emoji="✅"
         title="CD Archived Successfully"
-        description="**Node:** $NODE_NAME  //  $dev_name\n**Label:** $label\n**Rescued:** $rescued_pct${retry_info}\n**Path:** $(basename "$outdir")\n\n💬 *Reply to add disc label*"
+        description=$(printf "**Node:** %s  //  %s\n**Label:** %s\n**Rescued:** %s%s\n**Path:** %s\n\n💬 *Reply to add disc label*" \
+          "$NODE_NAME" "$dev_name" "$label" "$rescued_pct" "$retry_info" "$(basename "$outdir")")
       else
         color="15158332"  # Red
         emoji="❌"
@@ -233,7 +234,8 @@ data:
           log_tail=$(tail -5 "$outdir/job.log" | jq -Rs . | sed 's/^"//; s/"$//' || true)
         fi
     
-        description="**Node:** $NODE_NAME  //  $dev_name\n**Label:** $label\n**Rescued:** $rescued_pct\n**Read Errors:** $read_errors${retry_info}\n**Path:** $(basename "$outdir")\n\n**Last log lines:**\n\`\`\`\n${log_tail}\n\`\`\`"
+        description=$(printf "**Node:** %s  //  %s\n**Label:** %s\n**Rescued:** %s\n**Read Errors:** %s%s\n**Path:** %s\n\n**Last log lines:**\n\`\`\`\n%s\n\`\`\`" \
+          "$NODE_NAME" "$dev_name" "$label" "$rescued_pct" "$read_errors" "$retry_info" "$(basename "$outdir")" "$log_tail")
       fi
     
       # FIX: Use jq to construct JSON payload safely, preventing invalid JSON
