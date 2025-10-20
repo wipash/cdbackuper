@@ -110,10 +110,10 @@ make_status() {
 
   # Parse job log (contains ddrescue output and all other logs)
   if [[ -f "$dest/job.log" ]]; then
-    # Get the last "rescued:" line (final status)
-    rescued=$(grep 'rescued:' "$dest/job.log" | tail -1 | awk '{print $2, $3}' || echo "unknown")
-    # Get percentage
-    rescued_pct=$(grep 'pct rescued:' "$dest/job.log" | tail -1 | awk '{print $3}' || echo "0%")
+    # Get the last "rescued:" line (final status) - match only "rescued:", not "pct rescued:"
+    rescued=$(grep '^ *rescued:' "$dest/job.log" | tail -1 | awk '{print $2, $3}' | tr -d ',' || echo "unknown")
+    # Get percentage - strip trailing comma
+    rescued_pct=$(grep 'pct rescued:' "$dest/job.log" | tail -1 | awk '{print $3}' | tr -d ',' || echo "0%")
     # Read errors is field 6, need to strip trailing comma
     read_errors=$(grep 'read errors:' "$dest/job.log" | tail -1 | awk '{print $6}' | tr -d ',' || echo "0")
   fi
