@@ -91,7 +91,9 @@ convert_psd_previews() {
 
   # Convert each PSD
   find "$files_dir" -type f -iname "*.psd" -print0 2>/dev/null | while IFS= read -r -d '' psd; do
-    local jpg="${psd%.psd}.jpg"
+    # Remove .psd or .PSD extension (case-insensitive)
+    local jpg="${psd%.psd}"
+    jpg="${jpg%.PSD}.jpg"
     if convert "${psd}[0]" -quality 85 "$jpg" 2>/dev/null; then
       # Match JPG timestamp to PSD
       touch -r "$psd" "$jpg" 2>/dev/null || true
