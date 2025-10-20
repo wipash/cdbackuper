@@ -1,0 +1,112 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: image-copy-backfill
+  namespace: cd-import
+spec:
+  ttlSecondsAfterFinished: 3600  # Auto-cleanup after 1 hour
+  template:
+    metadata:
+      labels:
+        app: image-copy-backfill
+    spec:
+      restartPolicy: OnFailure
+      securityContext:
+        fsGroup: 65537
+      containers:
+      - name: copier
+        image: ghcr.io/wipash/cdbackuper:latest@sha256:917c9074daba1fed3bcdc0f90a351dd0c7c60309da1eca4281ccdcad295d4e83
+        imagePullPolicy: Always
+        command:
+        - /bin/bash
+        - -c
+        - |
+          set -euo pipefail
+
+          echo "Starting image copy backfill at $(date)"
+          echo "Scanning /data for non-proprietary image files..."
+
+          DEST_DIR="/data/all_images"
+          mkdir -p "$DEST_DIR"
+
+          total_found=0
+          total_copied=0
+          total_skipped=0
+          total_failed=0
+
+          if [[ ! -e /dev/fd ]]; then
+            ln -sf /proc/self/fd /dev/fd
+          fi
+
+          # Find all image files (case-insensitive)
+          # Formats: jpg, jpeg, png, gif, bmp, tiff, tif, webp
+          while IFS= read -r -d '' img; do
+            total_found=$((total_found + 1))
+
+            # Skip if this is already in all_images folder (avoid recursive copy)
+            if [[ "$img" == "$DEST_DIR"* ]]; then
+              total_skipped=$((total_skipped + 1))
+              continue
+            fi
+
+            # Get relative path from /data and flatten it
+            rel_path="${img#/data/}"
+            # Replace slashes with underscores to create flat filename
+            flat_name="${rel_path//\//_}"
+
+            # Destination file with flattened path
+            dest_file="$DEST_DIR/$flat_name"
+
+            # Skip if this file already exists
+            if [[ -f "$dest_file" ]]; then
+              total_skipped=$((total_skipped + 1))
+              continue
+            fi
+
+            # Copy file preserving timestamps
+            if cp -p "$img" "$dest_file" 2>&1; then
+              total_copied=$((total_copied + 1))
+              if ((total_copied % 100 == 0)); then
+                echo "  [INFO] Copied $total_copied files so far..."
+              fi
+            else
+              total_failed=$((total_failed + 1))
+              echo "  [FAIL] Failed to copy: $(basename "$img")"
+            fi
+          done < <(find /data -type f \( \
+            -iname "*.jpg" -o \
+            -iname "*.jpeg" -o \
+            -iname "*.png" -o \
+            -iname "*.gif" -o \
+            -iname "*.bmp" -o \
+            -iname "*.tiff" -o \
+            -iname "*.tif" -o \
+            -iname "*.webp" \
+          \) -path "*/files/*" -print0 2>/dev/null || true)
+
+          echo ""
+          echo "════════════════════════════════════════"
+          echo "Backfill complete at $(date)"
+          echo "  Found:   $total_found image files"
+          echo "  Copied:  $total_copied"
+          echo "  Skipped: $total_skipped (already in destination)"
+          echo "  Failed:  $total_failed"
+          echo "════════════════════════════════════════"
+          echo "Images copied to: $DEST_DIR"
+
+        volumeMounts:
+        - name: data
+          mountPath: /data
+
+        resources:
+          requests:
+            memory: "128Mi"
+            cpu: "250m"
+          limits:
+            memory: "512Mi"
+            cpu: "1000m"
+
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: cd-archive-pvc
