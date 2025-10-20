@@ -2,7 +2,7 @@
 set -Eeuo pipefail
 
 
-VERSION="1.0.7"
+VERSION="1.0.8"
 # --- Configuration via env (with defaults) -------------------------------
 DATA_ROOT="${DATA_ROOT:-/data}"         # PVC mount
 DEVICE_GLOB="${DEVICE_GLOB:-/dev/sr*}"  # CD/DVD devices to watch
@@ -171,9 +171,9 @@ send_discord_notification() {
       retry_nodes=$(jq -r '.retry_nodes // [] | join(", ")' "$outdir/status.json" 2>/dev/null || echo "")
     fi
     if [[ -n "$retry_nodes" ]]; then
-      retry_info="\n🔄 **Retry attempt** (Previous: $retry_nodes)"
+      retry_info=$'\n🔄 **Retry attempt** (Previous: '"$retry_nodes"')'
     else
-      retry_info="\n🔄 **Retry attempt**"
+      retry_info=$'\n🔄 **Retry attempt**'
     fi
   fi
 
@@ -188,11 +188,11 @@ send_discord_notification() {
     emoji="❌"
     title="CD Archive Failed/Partial"
 
-    # Get last 5 lines of log for failure context (properly escaped)
+    # Get last 5 lines of log for failure context
     local log_tail=""
     if [[ -f "$outdir/job.log" ]]; then
-      # Use jq to properly escape the log content for JSON
-      log_tail=$(tail -5 "$outdir/job.log" | jq -Rs . | sed 's/^"//; s/"$//' || true)
+      # Read directly - jq --arg will handle proper escaping
+      log_tail=$(tail -5 "$outdir/job.log" || true)
     fi
 
     description=$(printf "**Node:** %s  //  %s\n**Label:** %s\n**Rescued:** %s\n**Read Errors:** %s%s\n**Path:** %s\n\n**Last log lines:**\n\`\`\`\n%s\n\`\`\`" \
