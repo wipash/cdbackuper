@@ -2,7 +2,7 @@
 set -Eeuo pipefail
 
 
-VERSION="1.0.3"
+VERSION="1.0.4"
 # --- Configuration via env (with defaults) -------------------------------
 DATA_ROOT="${DATA_ROOT:-/data}"         # PVC mount
 DEVICE_GLOB="${DEVICE_GLOB:-/dev/sr*}"  # CD/DVD devices to watch
@@ -183,30 +183,40 @@ send_discord_notification() {
     emoji="❌"
     title="CD Archive Failed/Partial"
 
-    # Get last 5 lines of log for failure context
+    # Get last 5 lines of log for failure context (properly escaped)
     local log_tail=""
     if [[ -f "$outdir/job.log" ]]; then
-      log_tail=$(tail -5 "$outdir/job.log" | sed 's/"/\\"/g' || true)
+      # Use jq to properly escape the log content for JSON
+      log_tail=$(tail -5 "$outdir/job.log" | jq -Rs . | sed 's/^"//; s/"$//' || true)
     fi
 
     description="**Node:** $NODE_NAME  //  $dev_name\n**Label:** $label\n**Rescued:** $rescued_pct\n**Read Errors:** $read_errors${retry_info}\n**Path:** $(basename "$outdir")\n\n**Last log lines:**\n\`\`\`\n${log_tail}\n\`\`\`"
   fi
 
-  # Send Discord webhook (with embed for nice formatting)
+  # FIX: Use jq to construct JSON payload safely, preventing invalid JSON
+  local payload
+  payload=$(jq -n \
+    --arg username "CD Archiver" \
+    --arg title "$emoji $title" \
+    --arg description "$description" \
+    --argjson color "$color" \
+    --arg footer "$(basename "$outdir")" \
+    --arg timestamp "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    '{
+      username: $username,
+      embeds: [{
+        title: $title,
+        description: $description,
+        color: $color,
+        footer: {text: $footer},
+        timestamp: $timestamp
+      }]
+    }')
+
+  # Send Discord webhook
   curl -X POST "${DISCORD_WEBHOOK_URL}" \
     -H "Content-Type: application/json" \
-    -d "{
-      \"username\": \"CD Archiver\",
-      \"embeds\": [{
-        \"title\": \"$emoji $title\",
-        \"description\": \"$description\",
-        \"color\": $color,
-        \"footer\": {
-          \"text\": \"$(basename "$outdir")\"
-        },
-        \"timestamp\": \"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"
-      }]
-    }" 2>/dev/null || true
+    -d "$payload" 2>/dev/null || true
 }
 
 process_disc() {
@@ -356,7 +366,8 @@ process_disc() {
   local rescued_pct_num=0
   local read_errors="0"
   if [[ -f "$outdir/job.log" ]]; then
-    rescued_pct=$(grep 'pct rescued:' "$outdir/job.log" | tail -1 | awk '{print $3}' || echo "unknown")
+    # FIX: Strip trailing comma from rescued_pct
+    rescued_pct=$(grep 'pct rescued:' "$outdir/job.log" | tail -1 | awk '{print $3}' | tr -d ',' || echo "unknown")
     # Extract numeric value for comparison (e.g., "99.5%" -> 99.5)
     rescued_pct_num="${rescued_pct%\%}"
     # Read errors is field 6, need to strip trailing comma
