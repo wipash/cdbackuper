@@ -2,7 +2,7 @@
 set -Eeuo pipefail
 
 
-VERSION="1.0.6"
+VERSION="1.0.7"
 # --- Configuration via env (with defaults) -------------------------------
 DATA_ROOT="${DATA_ROOT:-/data}"         # PVC mount
 DEVICE_GLOB="${DEVICE_GLOB:-/dev/sr*}"  # CD/DVD devices to watch
@@ -14,7 +14,7 @@ NODE_NAME="${NODE_NAME:-$(cat /etc/hostname)}"
 # ddrescue limits for badly damaged disks (applied to retry pass only)
 MAX_READ_ERRORS="${MAX_READ_ERRORS:-15000}"  # Stop after N read errors
 MAX_BAD_AREAS="${MAX_BAD_AREAS:-30}"         # Stop after N bad areas
-SECTOR_TIMEOUT="${SECTOR_TIMEOUT:-10}"       # Timeout per sector (seconds)
+SECTOR_TIMEOUT="${SECTOR_TIMEOUT:-7000}"       # Timeout per sector (seconds)
 # -------------------------------------------------------------------------
 
 mkdir -p /var/run/cd-import /mnt/work
@@ -320,10 +320,12 @@ process_disc() {
   set +e
   # Fast pass: no limits, just skip bad sectors quickly
   ddrescue -d -b 2048 -n "$dev" "$iso" "$outdir/ddrescue.mapfile" 2>&1 | sed 's/\x1b\[[0-9;]*[a-zA-Z]//g' | cat -s
+  # Second pass: start at the beginning
+  ddrescue -i0 "$dev" "$iso" "$outdir/ddrescue.mapfile" 2>&1 | sed 's/\x1b\[[0-9;]*[a-zA-Z]//g' | cat -s
   # Retry pass: apply limits to prevent hanging on severely damaged disks
   ddrescue -d -b 2048 -r"$RETRIES" \
-    --max-read-errors="$MAX_READ_ERRORS" \
-    --max-bad-areas="$MAX_BAD_AREAS" \
+    --max-read-errors=+"$MAX_READ_ERRORS" \
+    --max-bad-areas=+"$MAX_BAD_AREAS" \
     --timeout="${SECTOR_TIMEOUT}s" \
     "$dev" "$iso" "$outdir/ddrescue.mapfile" 2>&1 | sed 's/\x1b\[[0-9;]*[a-zA-Z]//g' | cat -s
   rc=$?
