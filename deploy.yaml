@@ -493,6 +493,31 @@ data:
     # FIX #6: Track background jobs to avoid zombie accumulation
     declare -A active_jobs
     
+    # Eject all drives at startup to clear any previously inserted discs
+    log "" "⏏️  Ejecting all drives at startup..."
+    for dev in $DEVICE_GLOB; do
+      if [[ -e "$dev" ]]; then
+        eject "$dev" 2>/dev/null || true
+        log "" "  Ejected $(basename "$dev")"
+      fi
+    done
+    
+    # Wait for all drives to finish ejecting before starting main loop
+    log "" "⏳ Waiting for all drives to clear..."
+    for dev in $DEVICE_GLOB; do
+      if [[ -e "$dev" ]]; then
+        wait_count=0
+        while has_media "$dev" && [[ $wait_count -lt 30 ]]; do
+          sleep 1
+          wait_count=$((wait_count + 1))
+        done
+        if [[ $wait_count -ge 30 ]]; then
+          log "" "⚠️  $(basename "$dev") still reporting media after 30s - proceeding anyway"
+        fi
+      fi
+    done
+    log "" "✓ All drives cleared"
+    
     # Main loop
     log "" "🚀 Starting CD watcher v$VERSION - monitoring: $DEVICE_GLOB"
     log "" "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
