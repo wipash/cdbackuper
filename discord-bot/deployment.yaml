@@ -32,6 +32,12 @@ spec:
             secretKeyRef:
               name: cd-archiver-config
               key: discord-bot-token
+        - name: DISCORD_WEBHOOK_URL
+          valueFrom:
+            secretKeyRef:
+              name: cd-archiver-config
+              key: discord-webhook-url
+              optional: true
         volumeMounts:
         - name: cd-archive
           mountPath: /data

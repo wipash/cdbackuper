@@ -41,7 +41,7 @@ data:
     set -Eeuo pipefail
     
     
-    VERSION="1.0.8"
+    VERSION="1.1.0"
     # --- Configuration via env (with defaults) -------------------------------
     DATA_ROOT="${DATA_ROOT:-/data}"         # PVC mount
     DEVICE_GLOB="${DEVICE_GLOB:-/dev/sr*}"  # CD/DVD devices to watch
@@ -146,7 +146,7 @@ data:
     }
     
     make_status() {
-      local dest="$1" status="$2" msg="$3" iso="$4" started="$5" finished="$6" uuid="$7" is_retry="$8"
+      local dest="$1" status="$2" msg="$3" iso="$4" started="$5" finished="$6" uuid="$7" is_retry="$8" discord_msg_id="${9:-}"
       local rescued="" rescued_pct="" read_errors=""
     
       # Parse job log (contains ddrescue output and all other logs)
@@ -187,24 +187,86 @@ data:
             --arg read_errors "$read_errors" \
             --arg is_retry "$is_retry" \
             --arg retry_nodes "$retry_nodes" \
-            '{node:$node,status:$status,message:$message,iso:$iso,uuid:$uuid,started:$started,finished:$finished,is_retry:($is_retry=="true"),retry_nodes:(if $retry_nodes == "" then [] else ($retry_nodes|split(",")) end),ddrescue:{rescued:$rescued,rescued_pct:$rescued_pct,read_errors:$read_errors}}' \
+            --arg discord_message_id "$discord_msg_id" \
+            '{node:$node,status:$status,message:$message,iso:$iso,uuid:$uuid,started:$started,finished:$finished,is_retry:($is_retry=="true"),retry_nodes:(if $retry_nodes == "" then [] else ($retry_nodes|split(",")) end),ddrescue:{rescued:$rescued,rescued_pct:$rescued_pct,read_errors:$read_errors},discord_message_id:$discord_message_id}' \
         > "$dest/status.json"
     }
     
-    send_discord_notification() {
-      local status="$1"
-      local label="$2"
-      local rescued_pct="$3"
-      local read_errors="$4"
-      local outdir="$5"
-      local dev_name="$6"
-      local is_retry="${7:-false}"
+    send_discord_start_notification() {
+      local label="$1"
+      local outdir="$2"
+      local dev_name="$3"
+      local is_retry="${4:-false}"
+    
+      # Skip if webhook not configured
+      [[ -z "${DISCORD_WEBHOOK_URL:-}" ]] && return 0
+    
+      local retry_info=""
+      if [[ "$is_retry" == "true" ]]; then
+        local retry_nodes=""
+        if [[ -f "$outdir/status.json" ]]; then
+          retry_nodes=$(jq -r '.retry_nodes // [] | join(", ")' "$outdir/status.json" 2>/dev/null || echo "")
+        fi
+        if [[ -n "$retry_nodes" ]]; then
+          retry_info=$'\n🔄 **Retry attempt** (Previous: '"$retry_nodes"')'
+        else
+          retry_info=$'\n🔄 **Retry attempt**'
+        fi
+      fi
+    
+      local description
+      description=$(printf "**Node:** %s  //  %s\n**Disc Label:** %s%s\n\n💬 *Reply to add disc label*" \
+        "$NODE_NAME" "$dev_name" "$label" "$retry_info")
+    
+      local payload
+      payload=$(jq -n \
+        --arg username "CD Archiver" \
+        --arg title "💿 Processing CD..." \
+        --arg description "$description" \
+        --argjson color 16776960 \
+        --arg footer "$(basename "$outdir")" \
+        --arg timestamp "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+        '{
+          username: $username,
+          embeds: [{
+            title: $title,
+            description: $description,
+            color: $color,
+            footer: {text: $footer},
+            timestamp: $timestamp
+          }]
+        }')
+    
+      local response
+      response=$(curl -s -X POST "${DISCORD_WEBHOOK_URL}?wait=true" \
+        -H "Content-Type: application/json" \
+        -d "$payload" 2>/dev/null || echo "")
+    
+      # Extract message ID from response
+      local msg_id=""
+      if [[ -n "$response" ]]; then
+        msg_id=$(echo "$response" | jq -r '.id // empty' 2>/dev/null || echo "")
+      fi
+    
+      echo "$msg_id"
+    }
+    
+    update_discord_notification() {
+      local message_id="$1"
+      local status="$2"
+      local label="$3"
+      local rescued_pct="$4"
+      local read_errors="$5"
+      local outdir="$6"
+      local dev_name="$7"
+      local is_retry="${8:-false}"
     
       # Skip if webhook not configured
       [[ -z "${DISCORD_WEBHOOK_URL:-}" ]] && return 0
     
       local color emoji title description retry_info=""
-      local unc_path="\\\\brian\\Backup\\Maurice\\cd-archive\\$(basename "$outdir")"
+      local unc_path
+      unc_path="\\\\brian\\Backup\\Maurice\\cd-archive\\$(basename "$outdir")"
     
       # Add retry information if this is a duplicate disc
       if [[ "$is_retry" == "true" ]]; then
@@ -230,10 +292,8 @@ data:
         emoji="❌"
         title="CD Archive Failed/Partial"
     
-        # Get last 5 lines of log for failure context
         local log_tail=""
         if [[ -f "$outdir/job.log" ]]; then
-          # Read directly - jq --arg will handle proper escaping
           log_tail=$(tail -5 "$outdir/job.log" || true)
         fi
     
@@ -241,7 +301,6 @@ data:
           "$NODE_NAME" "$dev_name" "$label" "$rescued_pct" "$read_errors" "$retry_info" "$unc_path" "$log_tail")
       fi
     
-      # FIX: Use jq to construct JSON payload safely, preventing invalid JSON
       local payload
       payload=$(jq -n \
         --arg username "CD Archiver" \
@@ -261,8 +320,21 @@ data:
           }]
         }')
     
-      # Send Discord webhook
-      curl -X POST "${DISCORD_WEBHOOK_URL}" \
+      # Try to update existing message, fall back to new POST
+      if [[ -n "$message_id" ]]; then
+        local http_code
+        http_code=$(curl -s -o /dev/null -w "%{http_code}" -X PATCH \
+          "${DISCORD_WEBHOOK_URL}/messages/${message_id}" \
+          -H "Content-Type: application/json" \
+          -d "$payload" 2>/dev/null || echo "000")
+    
+        if [[ "$http_code" =~ ^2 ]]; then
+          return 0
+        fi
+      fi
+    
+      # Fallback: send as new message
+      curl -s -X POST "${DISCORD_WEBHOOK_URL}" \
         -H "Content-Type: application/json" \
         -d "$payload" 2>/dev/null || true
     }
@@ -271,7 +343,7 @@ data:
       local dev="$1"
       local dev_name
       dev_name=$(basename "$dev")
-      local started finished label uuid outdir iso rc=0 timeout_pid is_retry=false job_log
+      local started finished label uuid outdir iso rc=0 timeout_pid is_retry=false job_log discord_message_id=""
     
       # FIX #3: Clean mount point before use
       umount /mnt/work 2>/dev/null || true
@@ -346,6 +418,29 @@ data:
     
       iso="$outdir/disc.iso"
       touch "$outdir/.in-progress"
+    
+      # Send start notification to Discord and capture message ID
+      discord_message_id=$(send_discord_start_notification "$label" "$outdir" "$dev_name" "$is_retry")
+      if [[ -n "$discord_message_id" ]]; then
+        log "$dev_name" "📨 Discord start notification sent (msg ID: $discord_message_id)"
+      fi
+    
+      # Preserve existing retry_nodes before overwriting status.json
+      local existing_retry_nodes="[]"
+      if [[ "$is_retry" == "true" && -f "$outdir/status.json" ]]; then
+        existing_retry_nodes=$(jq -c '.retry_nodes // []' "$outdir/status.json" 2>/dev/null || echo "[]")
+      fi
+    
+      # Write early status.json so the bot knows processing is in progress
+      jq -n --arg node "$NODE_NAME" \
+            --arg status "in_progress" \
+            --arg uuid "$uuid" \
+            --arg started "$started" \
+            --arg is_retry "$is_retry" \
+            --arg discord_message_id "$discord_message_id" \
+            --argjson retry_nodes "$existing_retry_nodes" \
+            '{node:$node,status:$status,uuid:$uuid,started:$started,is_retry:($is_retry=="true"),discord_message_id:$discord_message_id,retry_nodes:$retry_nodes}' \
+        > "$outdir/status.json"
     
       # FIX #2: Track timeout guard PID so we can kill it later
       (
@@ -450,9 +545,34 @@ data:
         fi
       fi
     
+      # Check if a user label was added during processing
+      local user_label=""
+      if [[ -f "$outdir/label.txt" ]]; then
+        user_label=$(head -1 "$outdir/label.txt" | tr -cd '[:alnum:]_. -' | tr ' ' '_')
+      fi
+      local display_label="${user_label:-$label}"
+    
+      # Rename folder BEFORE notification so embed shows correct path
+      if [[ -n "$user_label" ]]; then
+        local new_outdir
+        if [[ -n "$uuid" ]]; then
+          new_outdir="$DATA_ROOT/${uuid}_${user_label}"
+        else
+          new_outdir="$DATA_ROOT/${started}_${user_label}"
+        fi
+        if [[ "$outdir" != "$new_outdir" && ! -d "$new_outdir" ]]; then
+          if mv "$outdir" "$new_outdir" 2>/dev/null; then
+            log "$dev_name" "📁 Renamed to $(basename "$new_outdir")"
+            outdir="$new_outdir"
+          else
+            log "$dev_name" "⚠️ Could not rename folder, continuing with original name"
+          fi
+        fi
+      fi
+    
       if [[ "$is_success" == "true" ]]; then
-        make_status "$outdir" "success" "Recovered successfully" "$iso" "$started" "$finished" "$uuid" "$is_retry"
-        send_discord_notification "success" "$label" "$rescued_pct" "$read_errors" "$outdir" "$dev_name" "$is_retry"
+        make_status "$outdir" "success" "Recovered successfully" "$iso" "$started" "$finished" "$uuid" "$is_retry" "$discord_message_id"
+        update_discord_notification "$discord_message_id" "success" "$display_label" "$rescued_pct" "$read_errors" "$outdir" "$dev_name" "$is_retry"
         log "$dev_name" "════════════════════════════════════════"
         log "$dev_name" "✅ SUCCESS - Rescued: $rescued_pct"
         if [[ "$is_retry" == "true" ]]; then
@@ -460,8 +580,8 @@ data:
         fi
         log "$dev_name" "════════════════════════════════════════"
       else
-        make_status "$outdir" "partial_or_failed" "ddrescue exited rc=$rc after retries" "$iso" "$started" "$finished" "$uuid" "$is_retry"
-        send_discord_notification "failure" "$label" "$rescued_pct" "$read_errors" "$outdir" "$dev_name" "$is_retry"
+        make_status "$outdir" "partial_or_failed" "ddrescue exited rc=$rc after retries" "$iso" "$started" "$finished" "$uuid" "$is_retry" "$discord_message_id"
+        update_discord_notification "$discord_message_id" "failure" "$display_label" "$rescued_pct" "$read_errors" "$outdir" "$dev_name" "$is_retry"
         log "$dev_name" "════════════════════════════════════════"
         log "$dev_name" "❌ FAILED - Rescued: $rescued_pct, Errors: $read_errors"
         if [[ "$is_retry" == "true" ]]; then
