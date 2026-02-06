@@ -2,7 +2,7 @@
 set -Eeuo pipefail
 
 
-VERSION="1.1.0"
+VERSION="1.2.0"
 # --- Configuration via env (with defaults) -------------------------------
 DATA_ROOT="${DATA_ROOT:-/data}"         # PVC mount
 DEVICE_GLOB="${DEVICE_GLOB:-/dev/sr*}"  # CD/DVD devices to watch
@@ -10,6 +10,8 @@ RETRIES="${RETRIES:-3}"                 # ddrescue retry passes
 TIMEOUT="${TIMEOUT:-7200}"              # seconds, per-disc guard
 EXTRACT_FILES="${EXTRACT_FILES:-true}"  # true|false
 POLL_SECS="${POLL_SECS:-5}"
+# Discord progress updates during ddrescue — min safe value ~10s (Discord: 5 PATCH/5s per message)
+PROGRESS_UPDATE_INTERVAL="${PROGRESS_UPDATE_INTERVAL:-30}"  # seconds, 0 to disable
 NODE_NAME="${NODE_NAME:-$(cat /etc/hostname)}"
 # ddrescue limits for badly damaged disks (applied to retry pass only)
 MAX_READ_ERRORS="${MAX_READ_ERRORS:-15000}"  # Stop after N read errors
@@ -93,7 +95,7 @@ convert_psd_previews() {
   while IFS= read -r -d '' psd; do
     # Remove any case variation of .psd extension
     local jpg
-    jpg="$(sed 's/\.[pP][sS][dD]$//' <<< "$psd").jpg"
+    jpg="${psd%.[pP][sS][dD]}.jpg"
     if convert "${psd}[0]" -quality 85 "$jpg" 2>/dev/null; then
       # Match JPG timestamp to PSD
       touch -r "$psd" "$jpg" 2>/dev/null || true
@@ -151,6 +153,88 @@ make_status() {
         --arg discord_message_id "$discord_msg_id" \
         '{node:$node,status:$status,message:$message,iso:$iso,uuid:$uuid,started:$started,finished:$finished,is_retry:($is_retry=="true"),retry_nodes:(if $retry_nodes == "" then [] else ($retry_nodes|split(",")) end),ddrescue:{rescued:$rescued,rescued_pct:$rescued_pct,read_errors:$read_errors},discord_message_id:$discord_message_id}' \
     > "$dest/status.json"
+}
+
+parse_ddrescue_progress() {
+  local job_log="$1"
+  # Parse the last 50 lines of job.log for latest ddrescue stats
+  local tail_lines
+  tail_lines=$(tail -50 "$job_log" 2>/dev/null || echo "")
+
+  pct_rescued=$(echo "$tail_lines" | grep 'pct rescued:' | tail -1 | awk '{print $3}' | tr -d ',' || echo "")
+  rescued=$(echo "$tail_lines" | grep '^ *rescued:' | tail -1 | awk '{print $2, $3}' | tr -d ',' || echo "")
+  current_rate=$(echo "$tail_lines" | grep 'ipos:' | tail -1 | awk '{print $4, $5}' | tr -d ',' || echo "")
+  read_errors=$(echo "$tail_lines" | grep 'read errors:' | tail -1 | awk '{print $6}' | tr -d ',' || echo "0")
+  run_time=$(echo "$tail_lines" | grep 'run time:' | tail -1 | sed 's/.*run time: *//' | awk '{print $1, $2}' | tr -d ',' || echo "")
+  remaining_time=$(echo "$tail_lines" | grep 'remaining time:' | tail -1 | sed 's/.*remaining time: *//' | awk '{print $1, $2}' | tr -d ',' || echo "")
+  pass_info=$(echo "$tail_lines" | grep -E '(Copying|Trimming|Scraping|Retrying|Filling)' | tail -1 | sed 's/^[[:space:]]*//' || echo "")
+}
+
+send_discord_progress_update() {
+  local message_id="$1"
+  local label="$2"
+  local outdir="$3"
+  local dev_name="$4"
+  local is_retry="${5:-false}"
+
+  [[ -z "${DISCORD_WEBHOOK_URL:-}" ]] && return 0
+  [[ -z "$message_id" ]] && return 0
+
+  local pct_rescued="" rescued="" current_rate="" read_errors="" run_time="" remaining_time="" pass_info=""
+  parse_ddrescue_progress "$outdir/job.log"
+
+  # Skip if ddrescue hasn't output stats yet
+  [[ -z "$pct_rescued" ]] && return 0
+
+  local retry_info=""
+  if [[ "$is_retry" == "true" ]]; then
+    local retry_nodes=""
+    if [[ -f "$outdir/status.json" ]]; then
+      retry_nodes=$(jq -r '.retry_nodes // [] | join(", ")' "$outdir/status.json" 2>/dev/null || echo "")
+    fi
+    if [[ -n "$retry_nodes" ]]; then
+      retry_info=$'\n🔄 **Retry attempt** (Previous: '"$retry_nodes"')'
+    else
+      retry_info=$'\n🔄 **Retry attempt**'
+    fi
+  fi
+
+  local remaining_str=""
+  if [[ -n "$remaining_time" ]]; then
+    remaining_str=" — ~${remaining_time} remaining"
+  fi
+
+  local description
+  description=$(printf "**Node:** %s  //  %s\n**Disc Label:** %s%s\n\n📊 **%s rescued** (%s)\n⚡ %s  |  %s errors\n⏱️ Running %s%s\n📝 %s\n\n💬 *Reply to add disc label*" \
+    "$NODE_NAME" "$dev_name" "$label" "$retry_info" \
+    "$pct_rescued" "$rescued" \
+    "${current_rate:-n/a}" "$read_errors" \
+    "${run_time:-...}" "$remaining_str" \
+    "${pass_info:-...}")
+
+  local payload
+  payload=$(jq -n \
+    --arg username "CD Archiver" \
+    --arg title "💿 Processing CD..." \
+    --arg description "$description" \
+    --argjson color 16776960 \
+    --arg footer "$(basename "$outdir")" \
+    --arg timestamp "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    '{
+      username: $username,
+      embeds: [{
+        title: $title,
+        description: $description,
+        color: $color,
+        footer: {text: $footer},
+        timestamp: $timestamp
+      }]
+    }')
+
+  curl -s --max-time 10 -X PATCH \
+    "${DISCORD_WEBHOOK_URL}/messages/${message_id}" \
+    -H "Content-Type: application/json" \
+    -d "$payload" >/dev/null 2>&1 || true
 }
 
 send_discord_start_notification() {
@@ -413,6 +497,19 @@ process_disc() {
   ) &
   timeout_pid=$!
 
+  # Start Discord progress update loop
+  progress_loop_pid=""
+  if [[ -n "${DISCORD_WEBHOOK_URL:-}" && -n "$discord_message_id" && "${PROGRESS_UPDATE_INTERVAL:-0}" -gt 0 ]]; then
+    (
+      while [[ -f "$outdir/.in-progress" ]]; do
+        sleep "${PROGRESS_UPDATE_INTERVAL}"
+        [[ -f "$outdir/.in-progress" ]] || break
+        send_discord_progress_update "$discord_message_id" "$label" "$outdir" "$dev_name" "$is_retry"
+      done
+    ) &
+    progress_loop_pid=$!
+  fi
+
   # ddrescue fast pass + a few retries
   log "$dev_name" "📀 Running ddrescue (fast pass + $RETRIES retries)..."
   set +e
@@ -426,6 +523,12 @@ process_disc() {
     "$dev" "$iso" "$outdir/ddrescue.mapfile" 2>&1 | sed 's/\x1b\[[0-9;]*[a-zA-Z]//g' | cat -s
   rc=$?
   set -e
+
+  # Kill progress loop before final notification (eliminates race condition)
+  if [[ -n "$progress_loop_pid" ]] && kill -0 "$progress_loop_pid" 2>/dev/null; then
+    kill "$progress_loop_pid" 2>/dev/null || true
+    wait "$progress_loop_pid" 2>/dev/null || true
+  fi
 
   # FIX #2: Kill timeout guard if still running
   if kill -0 "$timeout_pid" 2>/dev/null; then

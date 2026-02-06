@@ -94,6 +94,8 @@ spec:
             value: "7200"
           - name: POLL_SECS
             value: "5"
+          - name: PROGRESS_UPDATE_INTERVAL
+            value: "30"
           - name: DISCORD_WEBHOOK_URL
             valueFrom:
               secretKeyRef:
