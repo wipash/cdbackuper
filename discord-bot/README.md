@@ -36,8 +36,8 @@ kubectl -n cd-import create secret generic cd-archiver-config \
 ```bash
 # Build and push image
 cd discord-bot
-podman build -t ghcr.io/wipash/cd-label-bot .
-podman push ghcr.io/wipash/cd-label-bot:latest
+docker build -t ghcr.io/wipash/cd-label-bot .
+docker push ghcr.io/wipash/cd-label-bot:latest
 
 # Deploy to Kubernetes
 kubectl apply -f deployment.yaml

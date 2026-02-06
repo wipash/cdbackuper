@@ -20,9 +20,9 @@ shellcheck cd-importer.sh
 
 ### Build container image
 ```bash
-podman build -t ghcr.io/wipash/cdbackuper .
-podman login ghcr.io
-podman push ghcr.io/wipash/cdbackuper:latest
+docker build -t ghcr.io/wipash/cdbackuper .
+docker login ghcr.io
+docker push ghcr.io/wipash/cdbackuper:latest
 ```
 
 ### Create secret for Discord

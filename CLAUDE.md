@@ -84,9 +84,9 @@ shellcheck cd-importer.sh
 
 ```bash
 # Build and push container image
-podman build -t ghcr.io/wipash/cdbackuper .
-podman login ghcr.io
-podman push ghcr.io/wipash/cdbackuper:latest
+docker build -t ghcr.io/wipash/cdbackuper .
+docker login ghcr.io
+docker push ghcr.io/wipash/cdbackuper:latest
 
 # Generate deploy.yaml and deploy to Kubernetes
 ./build-deploy.sh
@@ -127,8 +127,8 @@ kubectl -n cd-import get secret cd-archiver-config
 
 # Deploy label bot (optional - see discord-bot/README.md for setup)
 cd discord-bot
-podman build -t ghcr.io/wipash/cd-label-bot .
-podman push ghcr.io/wipash/cd-label-bot:latest
+docker build -t ghcr.io/wipash/cd-label-bot .
+docker push ghcr.io/wipash/cd-label-bot:latest
 kubectl apply -f deployment.yaml
 ```
 

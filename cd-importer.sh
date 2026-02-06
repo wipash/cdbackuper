@@ -78,7 +78,6 @@ convert_psd_previews() {
   local files_dir="$1"
   local dev_name="$2"
   local psd_count=0
-  local converted_count=0
 
   # Count PSDs first
   psd_count=$(find "$files_dir" -type f -iname "*.psd" 2>/dev/null | wc -l)
@@ -90,10 +89,11 @@ convert_psd_previews() {
   log "$dev_name" "🖼️  Found $psd_count PSD file(s), generating jpgs..."
 
   # Convert each PSD
-  find "$files_dir" -type f -iname "*.psd" -print0 2>/dev/null | while IFS= read -r -d '' psd; do
-    # Remove .psd or .PSD extension (case-insensitive)
-    local jpg="${psd%.psd}"
-    jpg="${jpg%.PSD}.jpg"
+  local converted_count=0
+  while IFS= read -r -d '' psd; do
+    # Remove any case variation of .psd extension
+    local jpg
+    jpg="$(sed 's/\.[pP][sS][dD]$//' <<< "$psd").jpg"
     if convert "${psd}[0]" -quality 85 "$jpg" 2>/dev/null; then
       # Match JPG timestamp to PSD
       touch -r "$psd" "$jpg" 2>/dev/null || true
@@ -101,9 +101,9 @@ convert_psd_previews() {
     else
       log "$dev_name" "⚠️  Failed to convert: $(basename "$psd")"
     fi
-  done
+  done < <(find "$files_dir" -type f -iname "*.psd" -print0 2>/dev/null)
 
-  log "$dev_name" "✓ PSD conversion complete"
+  log "$dev_name" "✓ PSD conversion complete ($converted_count/$psd_count)"
 }
 
 make_status() {
@@ -165,6 +165,7 @@ send_discord_notification() {
   [[ -z "${DISCORD_WEBHOOK_URL:-}" ]] && return 0
 
   local color emoji title description retry_info=""
+  local unc_path="\\\\brian\\Backup\\Maurice\\cd-archive\\$(basename "$outdir")"
 
   # Add retry information if this is a duplicate disc
   if [[ "$is_retry" == "true" ]]; then
@@ -183,8 +184,8 @@ send_discord_notification() {
     color="3066993"  # Green
     emoji="✅"
     title="CD Archived Successfully"
-    description=$(printf "**Node:** %s  //  %s\n**Label:** %s\n**Rescued:** %s%s\n**Path:** %s\n\n💬 *Reply to add disc label*" \
-      "$NODE_NAME" "$dev_name" "$label" "$rescued_pct" "$retry_info" "$(basename "$outdir")")
+    description=$(printf "**Node:** %s  //  %s\n**Label:** %s\n**Rescued:** %s%s\n**Path:** \`%s\`\n\n💬 *Reply to add disc label*" \
+      "$NODE_NAME" "$dev_name" "$label" "$rescued_pct" "$retry_info" "$unc_path")
   else
     color="15158332"  # Red
     emoji="❌"
@@ -197,8 +198,8 @@ send_discord_notification() {
       log_tail=$(tail -5 "$outdir/job.log" || true)
     fi
 
-    description=$(printf "**Node:** %s  //  %s\n**Label:** %s\n**Rescued:** %s\n**Read Errors:** %s%s\n**Path:** %s\n\n**Last log lines:**\n\`\`\`\n%s\n\`\`\`" \
-      "$NODE_NAME" "$dev_name" "$label" "$rescued_pct" "$read_errors" "$retry_info" "$(basename "$outdir")" "$log_tail")
+    description=$(printf "**Node:** %s  //  %s\n**Label:** %s\n**Rescued:** %s\n**Read Errors:** %s%s\n**Path:** \`%s\`\n\n**Last log lines:**\n\`\`\`\n%s\n\`\`\`" \
+      "$NODE_NAME" "$dev_name" "$label" "$rescued_pct" "$read_errors" "$retry_info" "$unc_path" "$log_tail")
   fi
 
   # FIX: Use jq to construct JSON payload safely, preventing invalid JSON
@@ -384,6 +385,10 @@ process_disc() {
     rescued_pct=$(grep 'pct rescued:' "$outdir/job.log" | tail -1 | awk '{print $3}' | tr -d ',' || echo "unknown")
     # Extract numeric value for comparison (e.g., "99.5%" -> 99.5)
     rescued_pct_num="${rescued_pct%\%}"
+    # Ensure it's actually numeric, fall back to 0 if parsing failed
+    if ! [[ "$rescued_pct_num" =~ ^[0-9]+\.?[0-9]*$ ]]; then
+      rescued_pct_num=0
+    fi
     # Read errors is field 6, need to strip trailing comma
     read_errors=$(grep 'read errors:' "$outdir/job.log" | tail -1 | awk '{print $6}' | tr -d ',' || echo "0")
   fi
