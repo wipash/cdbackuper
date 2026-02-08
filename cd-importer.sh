@@ -612,7 +612,7 @@ process_disc() {
   # Check if a user label was added during processing
   local user_label=""
   if [[ -f "$outdir/label.txt" ]]; then
-    user_label=$(head -1 "$outdir/label.txt" | tr -cd '[:alnum:]_. -' | tr ' ' '_')
+    user_label=$(head -1 "$outdir/label.txt" | sed 's/&/and/g' | tr -cd '[:alnum:]_. -' | tr -s ' ' | tr ' ' '_')
   fi
   local display_label="${user_label:-$label}"
 

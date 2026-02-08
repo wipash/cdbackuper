@@ -26,7 +26,9 @@ client = discord.Client(intents=intents)
 def sanitize_label(text):
     """Sanitize label text: keep [a-zA-Z0-9_. -], replace spaces with _."""
     first_line = text.strip().split("\n")[0]
+    first_line = first_line.replace('&', 'and')
     sanitized = re.sub(r'[^a-zA-Z0-9_. -]', '', first_line)
+    sanitized = re.sub(r' +', ' ', sanitized).strip()
     return sanitized.replace(' ', '_')
 
 
