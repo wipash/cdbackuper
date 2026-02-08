@@ -41,7 +41,7 @@ data:
     set -Eeuo pipefail
     
     
-    VERSION="1.2.0"
+    VERSION="1.3.0"
     # --- Configuration via env (with defaults) -------------------------------
     DATA_ROOT="${DATA_ROOT:-/data}"         # PVC mount
     DEVICE_GLOB="${DEVICE_GLOB:-/dev/sr*}"  # CD/DVD devices to watch
@@ -56,6 +56,9 @@ data:
     MAX_READ_ERRORS="${MAX_READ_ERRORS:-15000}"  # Stop after N read errors
     MAX_BAD_AREAS="${MAX_BAD_AREAS:-30}"         # Stop after N bad areas
     SECTOR_TIMEOUT="${SECTOR_TIMEOUT:-600}"       # Timeout per sector (seconds)
+    # Device-loss recovery: retry ddrescue within the same job when the drive temporarily disappears
+    MAX_DEVICE_RETRIES="${MAX_DEVICE_RETRIES:-5}"  # Max recovery attempts per job
+    DEVICE_RECOVERY_WAIT="${DEVICE_RECOVERY_WAIT:-30}"  # Seconds to wait for device to reappear
     # -------------------------------------------------------------------------
     
     mkdir -p /var/run/cd-import /mnt/work
@@ -93,6 +96,46 @@ data:
         return 0
       fi
       return 1
+    }
+    
+    wait_for_device_ready() {
+      local dev="$1"
+      local max_wait="$2"
+      local count=0
+      # Wait for device file to exist and media to be detected
+      while [[ $count -lt $max_wait ]]; do
+        if [[ -e "$dev" ]] && has_media "$dev"; then
+          # Brief settle time for drive to stabilize
+          sleep 3
+          return 0
+        fi
+        sleep 1
+        count=$((count + 1))
+      done
+      return 1
+    }
+    
+    # Attempt device-loss recovery. Returns 0 if recovered, 1 if giving up.
+    # Usage: try_device_recovery "$dev" "$dev_name" "during fast pass" || { rc=1; break; }
+    # Caller must manage ddrescue_attempt and use 'continue' on success.
+    try_device_recovery() {
+      local dev="$1"
+      local dev_name="$2"
+      local context="$3"
+      ddrescue_attempt=$((ddrescue_attempt + 1))
+      if [[ $ddrescue_attempt -le $MAX_DEVICE_RETRIES ]]; then
+        log "$dev_name" "⚠️  Device lost ${context} (attempt $ddrescue_attempt/$MAX_DEVICE_RETRIES), waiting up to ${DEVICE_RECOVERY_WAIT}s..."
+        if wait_for_device_ready "$dev" "$DEVICE_RECOVERY_WAIT"; then
+          log "$dev_name" "✓ Device recovered, resuming ddrescue..."
+          return 0
+        else
+          log "$dev_name" "❌ Device did not recover"
+          return 1
+        fi
+      else
+        log "$dev_name" "❌ Max device recovery attempts reached ($MAX_DEVICE_RETRIES)"
+        return 1
+      fi
     }
     
     disc_label() {
@@ -549,18 +592,69 @@ data:
         progress_loop_pid=$!
       fi
     
-      # ddrescue fast pass + a few retries
-      log "$dev_name" "📀 Running ddrescue (fast pass + $RETRIES retries)..."
+      # ddrescue with device-loss recovery
+      # If the drive temporarily disappears mid-read (common with flaky CD drives),
+      # wait for it to reappear and resume from the mapfile instead of failing the
+      # entire job and spawning a new one from the main loop.
+      # Note: ddrescue_attempt counts individual device-loss events, not loop
+      # iterations. A single iteration can burn multiple attempts if the device
+      # vanishes during both the fast and retry passes.
+      local ddrescue_attempt=0
+      local fast_pass_done=false
       set +e
-      # Fast pass: no limits, just skip bad sectors quickly
-      ddrescue -d -b 2048 -n "$dev" "$iso" "$outdir/ddrescue.mapfile" 2>&1 | sed 's/\x1b\[[0-9;]*[a-zA-Z]//g' | cat -s
-      # Retry pass: apply limits to prevent hanging on severely damaged disks
-      ddrescue -d -R -b 2048 -r"$RETRIES" \
-        --max-read-errors=+"$MAX_READ_ERRORS" \
-        --max-bad-areas=+"$MAX_BAD_AREAS" \
-        --timeout="${SECTOR_TIMEOUT}s" \
-        "$dev" "$iso" "$outdir/ddrescue.mapfile" 2>&1 | sed 's/\x1b\[[0-9;]*[a-zA-Z]//g' | cat -s
-      rc=$?
+      while true; do
+        # Verify device is available before starting/resuming
+        if [[ ! -e "$dev" ]] || ! has_media "$dev"; then
+          if try_device_recovery "$dev" "$dev_name" "before ddrescue"; then
+            continue
+          else
+            rc=1; break
+          fi
+        fi
+    
+        # Fast pass: skip if already completed in a previous iteration
+        if [[ "$fast_pass_done" != "true" ]]; then
+          if [[ $ddrescue_attempt -gt 0 ]]; then
+            log "$dev_name" "📀 Resuming ddrescue fast pass from mapfile (recovery attempt $ddrescue_attempt)..."
+          else
+            log "$dev_name" "📀 Running ddrescue (fast pass + $RETRIES retries)..."
+          fi
+    
+          ddrescue -d -b 2048 -n "$dev" "$iso" "$outdir/ddrescue.mapfile" 2>&1 | sed 's/\x1b\[[0-9;]*[a-zA-Z]//g' | cat -s
+          local fast_rc
+          fast_rc=$?
+    
+          if [[ $fast_rc -ne 0 ]] && { [[ ! -e "$dev" ]] || ! has_media "$dev"; }; then
+            if try_device_recovery "$dev" "$dev_name" "during fast pass"; then
+              continue
+            else
+              rc=1; break
+            fi
+          fi
+          fast_pass_done=true
+        else
+          log "$dev_name" "📀 Resuming ddrescue retry pass from mapfile (recovery attempt $ddrescue_attempt)..."
+        fi
+    
+        # Retry pass: apply limits to prevent hanging on severely damaged disks
+        ddrescue -d -R -b 2048 -r"$RETRIES" \
+          --max-read-errors=+"$MAX_READ_ERRORS" \
+          --max-bad-areas=+"$MAX_BAD_AREAS" \
+          --timeout="${SECTOR_TIMEOUT}s" \
+          "$dev" "$iso" "$outdir/ddrescue.mapfile" 2>&1 | sed 's/\x1b\[[0-9;]*[a-zA-Z]//g' | cat -s
+        rc=$?
+    
+        if [[ $rc -ne 0 ]] && { [[ ! -e "$dev" ]] || ! has_media "$dev"; }; then
+          if try_device_recovery "$dev" "$dev_name" "during retry pass"; then
+            continue
+          else
+            rc=1; break
+          fi
+        fi
+    
+        # Both passes completed without device loss
+        break
+      done
       set -e
     
       # Kill progress loop before final notification (eliminates race condition)
